@@ -1,0 +1,123 @@
+import Foundation
+
+/// The hard safety boundary of Sweep. Both the scanner and the cleaner consult
+/// this policy independently (defense in depth): nothing inside a protected
+/// subtree is ever offered, selected, or deleted by rule-based cleaning.
+///
+/// The uninstaller does not go through this check for the .app bundle itself —
+/// it has its own, narrower validation (`UninstallGuard`).
+public struct SafetyPolicy: Sendable {
+    public let home: URL
+
+    /// Subtrees that are completely off-limits: the node and everything below.
+    public let protectedSubtrees: [String]
+    /// Nodes that may not be deleted themselves, but whose children may be
+    /// (e.g. ~/Library/Caches: we trim its contents, never the folder).
+    public let protectedExactNodes: [String]
+
+    public init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
+        self.home = home
+        let h = home.path
+
+        var subtrees = [
+            "\(h)/Documents",
+            "\(h)/Desktop",
+            "\(h)/Pictures",
+            "\(h)/Music",
+            "\(h)/Movies",
+            "\(h)/Public",
+            "\(h)/Applications",
+            "\(h)/Library/Mobile Documents",   // iCloud Drive
+            "\(h)/Library/CloudStorage",       // Dropbox / Google Drive / OneDrive mounts
+            "\(h)/Library/Keychains",
+            "\(h)/Library/Mail",
+            "\(h)/Library/Messages",
+            "\(h)/Library/Photos",
+            "\(h)/Library/Wallet",
+            "\(h)/Library/Accounts",
+            "\(h)/Library/Passes",
+            "\(h)/Library/Autosave Information",
+            "\(h)/.ssh",
+            "\(h)/.gnupg",
+            "\(h)/.aws",
+            "\(h)/.config",
+            "\(h)/.kube",
+        ]
+        subtrees += [
+            "/System",
+            "/usr",
+            "/bin",
+            "/sbin",
+            "/private/etc",
+            "/private/var/db",
+            "/Users/Shared",
+            "/Library/Application Support",
+            "/Library/LaunchDaemons",
+            "/Library/Extensions",
+            "/Library/Frameworks",
+            "/Library/Keychains",
+        ]
+        self.protectedSubtrees = subtrees.map(SafetyPolicy.canonical)
+
+        self.protectedExactNodes = [
+            h,
+            "\(h)/Library",
+            "\(h)/Library/Application Support",
+            "\(h)/Library/Caches",
+            "\(h)/Library/Logs",
+            "\(h)/Library/Preferences",
+            "\(h)/Library/Containers",
+            "\(h)/Library/Group Containers",
+            "\(h)/Library/Developer",
+            "\(h)/Downloads",
+            "/",
+            "/Library",
+            "/Library/Caches",
+            "/Library/Logs",
+            "/private/var/log",
+            "/private/var/folders",
+            "/Applications",
+        ].map(SafetyPolicy.canonical)
+    }
+
+    /// true when the URL must never be deleted. APFS is case-insensitive by
+    /// default, so comparison is case-folded.
+    public func isProtected(_ url: URL) -> Bool {
+        let path = SafetyPolicy.canonical(url.path)
+        for node in protectedExactNodes where path == node { return true }
+        for subtree in protectedSubtrees {
+            if path == subtree || path.hasPrefix(subtree + "/") { return true }
+        }
+        return false
+    }
+
+    /// true when the URL sits under a user-provided whitelist prefix.
+    public static func isWhitelisted(_ url: URL, whitelist: [String]) -> Bool {
+        guard !whitelist.isEmpty else { return false }
+        let path = canonical(url.path)
+        for entry in whitelist {
+            let w = canonical(entry)
+            guard !w.isEmpty else { continue }
+            if path == w || path.hasPrefix(w + "/") { return true }
+        }
+        return false
+    }
+
+    static func canonical(_ path: String) -> String {
+        var p = (path as NSString).standardizingPath.lowercased()
+        while p.count > 1 && p.hasSuffix("/") { p.removeLast() }
+        return p
+    }
+}
+
+/// Validation for the explicit uninstall flow: the only things it may remove
+/// are an .app bundle inside an Applications folder, or leftover entries the
+/// finder located inside the known per-app data roots.
+public enum UninstallGuard {
+    public static func mayRemoveAppBundle(_ url: URL) -> Bool {
+        guard url.pathExtension == "app" else { return false }
+        let parent = SafetyPolicy.canonical(url.deletingLastPathComponent().path)
+        let home = SafetyPolicy.canonical(FileManager.default.homeDirectoryForCurrentUser.path)
+        return parent == "/applications" || parent == home + "/applications"
+    }
+}
