@@ -1,9 +1,9 @@
 # Sweep
 
-A native macOS deep-clean app — everything [mole](https://github.com/tw93/mole) does in the
-terminal, wrapped in a proper Mac interface, plus live memory tools and an
-intelligent background auto-trim. Built with SwiftUI, no Electron, no sandbox
-tricks, distributed as a DMG.
+A native macOS deep-clean app: a thorough command-line-grade cleanup wrapped in
+a proper Mac interface, plus live memory tools and an intelligent background
+auto-trim. Built with SwiftUI, no Electron, no sandbox tricks, distributed as a
+DMG.
 
 ![macOS 15+](https://img.shields.io/badge/macOS-15%2B-blue) ![Swift 6](https://img.shields.io/badge/Swift-6-orange)
 

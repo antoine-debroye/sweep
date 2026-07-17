@@ -243,10 +243,10 @@ public enum RuleCatalog {
             tier: .safe
         ))
         rules.append(CleaningRule(
-            id: "mole-cache",
+            id: "cli-tool-cache",
             category: .developer,
-            title: "mole cache",
-            detail: "Cache from the mole cleanup tool. Regenerated on next run.",
+            title: "Command-line tool cache",
+            detail: "Cache left by a command-line cleanup tool. Regenerated on next run.",
             paths: [home.appending(path: ".cache/mole")],
             contentsOnly: false,
             minAgeDays: 7,

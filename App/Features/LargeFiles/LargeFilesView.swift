@@ -24,9 +24,27 @@ final class LargeFilesModel {
         let home = policy.home
 
         scanTask = Task {
+            // Buffer incoming files and flush in batches: appending + re-sorting
+            // the observed array on every single item drives the SwiftUI List
+            // hard enough to crash in optimized builds. Deduping by path guards
+            // against the same URL being yielded twice (possible while the tree
+            // is being written to), which would put duplicate ids into ForEach.
+            var buffer: [LargeFile] = []
+            var seen = Set<String>()
+
             for await file in LargeFileScanner.scan(roots: [home], minSize: minBytes, policy: policy) {
                 guard !Task.isCancelled else { return }
-                self.files.append(file)
+                guard seen.insert(file.id).inserted else { continue }
+                buffer.append(file)
+                if buffer.count >= 25 {
+                    self.files.append(contentsOf: buffer)
+                    self.files.sort { $0.size > $1.size }
+                    buffer.removeAll(keepingCapacity: true)
+                    await Task.yield()   // let the List render this batch
+                }
+            }
+            if !buffer.isEmpty {
+                self.files.append(contentsOf: buffer)
                 self.files.sort { $0.size > $1.size }
             }
             self.scanning = false
@@ -190,7 +208,8 @@ struct LargeFilesView: View {
                     Button {
                         large.moveToTrash(model: model)
                     } label: {
-                        Label("Move \(large.selectedSize.sweepBytes) to Trash", systemImage: "trash")
+                        Label(large.selection.isEmpty ? "Select files to remove" : "Move \(large.selectedSize.sweepBytes) to Trash",
+                              systemImage: "trash")
                     }
                     .buttonStyle(HeroButtonStyle())
                     .disabled(large.selection.isEmpty)

@@ -258,6 +258,27 @@ final class EngineTests: XCTestCase {
         XCTAssertTrue(names.contains("com.deadvendor.oldapp"),
                       "a genuinely orphaned bundle id should still be found")
     }
+
+    // MARK: - Large file scanner pruning
+
+    func testLargeFileScannerPrunesBuildCachesAndFindsRealFiles() async throws {
+        try write("code/app/movie.mov", megabytes: 2, date: Date())
+        try write("code/app/node_modules/pkg/blob.bin", megabytes: 2, date: Date())
+        try write("code/app/.next/cache/turbopack/chunk.sst", megabytes: 2, date: Date())
+        try write("code/app/target/release/binary.bin", megabytes: 2, date: Date())
+
+        let policy = SafetyPolicy(home: fixtureHome)
+        var found: [String] = []
+        for await file in LargeFileScanner.scan(roots: [fixtureHome], minSize: 1_000_000, policy: policy) {
+            found.append(file.name)
+        }
+        XCTAssertTrue(found.contains("movie.mov"), "real large files must be found")
+        XCTAssertFalse(found.contains("blob.bin"), "node_modules must be pruned")
+        XCTAssertFalse(found.contains("chunk.sst"), ".next build cache must be pruned")
+        XCTAssertFalse(found.contains("binary.bin"), "target build output must be pruned")
+        // No duplicate ids in the stream.
+        XCTAssertEqual(found.count, Set(found).count)
+    }
 }
 
 /// Records removals instead of performing them.

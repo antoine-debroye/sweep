@@ -197,7 +197,7 @@ struct SettingsView: View {
                         Text("Sweep 1.0")
                             .font(.system(size: 12, weight: .semibold))
                         Spacer()
-                        Text("Built for Antoine · inspired by tw93/mole")
+                        Text("Built for Antoine")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }

@@ -98,7 +98,7 @@ struct OnboardingView: View {
             }
             Text("Welcome to Sweep")
                 .font(.system(size: 28, weight: .bold, design: .rounded))
-            Text("Deep-cleans your Mac like mole, with a proper app around it.\nEverything is previewed before removal, goes to the Trash first, and can be undone from History.")
+            Text("A deep, thorough clean for your Mac — with a proper app around it.\nEverything is previewed before removal, goes to the Trash first, and can be undone from History.")
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

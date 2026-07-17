@@ -51,7 +51,7 @@ public enum AppInventory {
 // MARK: - Leftover finder
 
 /// Locates everything an app scattered across the user's Library (and a few
-/// system locations), mirroring mole's uninstaller coverage.
+/// system locations) for a complete uninstall.
 public enum LeftoverFinder {
     public static func find(
         bundleID: String,

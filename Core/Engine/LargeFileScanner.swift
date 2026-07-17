@@ -13,6 +13,17 @@ public struct LargeFile: Sendable, Identifiable {
 /// always an explicit, per-file user action, so protected areas are excluded
 /// from the walk entirely (this scanner is about junk, not Documents).
 public enum LargeFileScanner {
+    /// Directories not worth walking for "large files": build output and tool
+    /// caches (their big files are regenerable and belong to Dev Cleaner, not
+    /// here), plus version-control internals. Skipping them keeps the walk fast
+    /// and off the volatile trees a developer is actively writing to.
+    static let pruneDirNames: Set<String> = [
+        "node_modules", ".git", ".svn", ".hg", "target", "build", "dist",
+        ".next", ".nuxt", ".turbo", ".parcel-cache", "Pods", "DerivedData",
+        ".gradle", "venv", ".venv", "__pycache__", ".tox", ".cache", "Caches",
+        ".ollama", ".lmstudio",
+    ]
+
     public static func scan(
         roots: [URL],
         minSize: Int64,
@@ -67,6 +78,10 @@ public enum LargeFileScanner {
                     enumerator.skipDescendants()
                     continue
                 }
+                if pruneDirNames.contains(name) {
+                    enumerator.skipDescendants()
+                    continue
+                }
                 if policy.isProtected(url) {
                     enumerator.skipDescendants()
                     continue
@@ -95,7 +110,7 @@ public enum LargeFileScanner {
 // MARK: - Project artifacts
 
 /// Finds regenerable build artifacts (node_modules, target, .build, …) inside
-/// the user's dev folders, mirroring mole's `mo purge`.
+/// the user's dev folders.
 public enum ProjectArtifactScanner {
     public static let artifactNames: Set<String> = [
         "node_modules", ".build", "target", "dist", "build",
