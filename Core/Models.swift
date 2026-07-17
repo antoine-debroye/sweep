@@ -13,6 +13,7 @@ public enum CleanCategory: String, CaseIterable, Codable, Sendable, Identifiable
     case systemDomain
     case trash
     case largeFiles
+    case aiModels
 
     public var id: String { rawValue }
 
@@ -28,6 +29,7 @@ public enum CleanCategory: String, CaseIterable, Codable, Sendable, Identifiable
         case .systemDomain: "System Files"
         case .trash: "Trash"
         case .largeFiles: "Large Files"
+        case .aiModels: "AI Models"
         }
     }
 
@@ -43,6 +45,7 @@ public enum CleanCategory: String, CaseIterable, Codable, Sendable, Identifiable
         case .systemDomain: "lock.shield"
         case .trash: "trash"
         case .largeFiles: "doc.badge.clock"
+        case .aiModels: "brain"
         }
     }
 
@@ -58,6 +61,7 @@ public enum CleanCategory: String, CaseIterable, Codable, Sendable, Identifiable
         case .systemDomain: "System-level caches and logs. Needs administrator access; removed permanently."
         case .trash: "Files already in your Trash."
         case .largeFiles: "Big files you reviewed and removed yourself."
+        case .aiModels: "Local LLM and ML models from Ollama, LM Studio and Hugging Face. Re-downloadable."
         }
     }
 
@@ -74,6 +78,7 @@ public enum CleanCategory: String, CaseIterable, Codable, Sendable, Identifiable
         case .trash: 7
         case .systemDomain: 8
         case .largeFiles: 9
+        case .aiModels: 10
         }
     }
 }
@@ -268,6 +273,7 @@ public enum CleanSource: String, Codable, Sendable {
     case largeFiles
     case devCleaner
     case menuBar
+    case aiModels
 
     public var label: String {
         switch self {
@@ -277,6 +283,7 @@ public enum CleanSource: String, Codable, Sendable {
         case .largeFiles: "Large Files"
         case .devCleaner: "Dev Cleaner"
         case .menuBar: "Quick Clean"
+        case .aiModels: "AI Models"
         }
     }
 }

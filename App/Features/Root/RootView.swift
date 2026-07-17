@@ -18,6 +18,7 @@ struct RootView: View {
                 Section {
                     sidebarRow(.uninstaller)
                     sidebarRow(.largeFiles)
+                    sidebarRow(.aiModels)
                     sidebarRow(.devCleaner)
                     sidebarRow(.optimize)
                 } header: {
@@ -64,6 +65,7 @@ struct RootView: View {
         case .memory: MemoryView()
         case .uninstaller: UninstallerView()
         case .largeFiles: LargeFilesView()
+        case .aiModels: AIModelsView()
         case .devCleaner: DevCleanerView()
         case .optimize: OptimizeView()
         case .history: HistoryView()

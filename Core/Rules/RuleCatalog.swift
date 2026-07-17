@@ -242,6 +242,142 @@ public enum RuleCatalog {
             minAgeDays: 14,
             tier: .safe
         ))
+        rules.append(CleaningRule(
+            id: "mole-cache",
+            category: .developer,
+            title: "mole cache",
+            detail: "Cache from the mole cleanup tool. Regenerated on next run.",
+            paths: [home.appending(path: ".cache/mole")],
+            contentsOnly: false,
+            minAgeDays: 7,
+            tier: .safe
+        ))
+
+        // MARK: Code editors (Cursor, VS Code) — Electron caches, never user state
+
+        let cursorSupport = lib.appending(path: "Application Support/Cursor")
+        rules.append(CleaningRule(
+            id: "cursor-caches",
+            category: .developer,
+            title: "Cursor caches",
+            detail: "Cursor's regenerable disk caches. Not your settings, chats or extensions.",
+            paths: [
+                cursorSupport.appending(path: "Cache"),
+                cursorSupport.appending(path: "CachedData"),
+                cursorSupport.appending(path: "Code Cache"),
+                cursorSupport.appending(path: "GPUCache"),
+                cursorSupport.appending(path: "CachedExtensionVSIXs"),
+                cursorSupport.appending(path: "Service Worker/CacheStorage"),
+                cursorSupport.appending(path: "logs"),
+            ],
+            contentsOnly: false,
+            minAgeDays: 3,
+            skipRunningApps: true,
+            tier: .safe
+        ))
+        rules.append(CleaningRule(
+            id: "cursor-db-backup",
+            category: .developer,
+            title: "Cursor state backup",
+            detail: "Stale backup of Cursor's state database. Cursor rewrites it; your live data is untouched.",
+            paths: [cursorSupport.appending(path: "User/globalStorage/state.vscdb.backup")],
+            contentsOnly: false,
+            minAgeDays: 1,
+            skipRunningApps: true,
+            tier: .safe
+        ))
+        rules.append(CleaningRule(
+            id: "cursor-workspace-storage",
+            category: .developer,
+            title: "Cursor workspace history",
+            detail: "Per-workspace state and local history. Regenerable, but you may lose local file history.",
+            paths: [
+                cursorSupport.appending(path: "User/workspaceStorage"),
+                cursorSupport.appending(path: "User/History"),
+            ],
+            contentsOnly: false,
+            minAgeDays: 14,
+            skipRunningApps: true,
+            tier: .review
+        ))
+        let codeSupport = lib.appending(path: "Application Support/Code")
+        rules.append(CleaningRule(
+            id: "vscode-caches",
+            category: .developer,
+            title: "VS Code caches",
+            detail: "VS Code's regenerable disk caches.",
+            paths: [
+                codeSupport.appending(path: "Cache"),
+                codeSupport.appending(path: "CachedData"),
+                codeSupport.appending(path: "Code Cache"),
+                codeSupport.appending(path: "GPUCache"),
+                codeSupport.appending(path: "logs"),
+            ],
+            contentsOnly: false,
+            minAgeDays: 3,
+            skipRunningApps: true,
+            tier: .safe
+        ))
+
+        // MARK: Electron app caches — only the cache subfolders, never user data
+
+        let electronApps = ["Notion", "Slack", "discord", "Microsoft Teams", "obsidian", "Figma", "Linear", "Spotify"]
+        let electronCacheSubdirs = ["Cache", "Code Cache", "GPUCache", "Service Worker/CacheStorage"]
+        var electronPaths: [URL] = []
+        for app in electronApps {
+            let base = lib.appending(path: "Application Support/\(app)")
+            for sub in electronCacheSubdirs {
+                electronPaths.append(base.appending(path: sub))
+            }
+        }
+        rules.append(CleaningRule(
+            id: "electron-app-caches",
+            category: .developer,
+            title: "Desktop app caches",
+            detail: "Web caches from Electron apps (Notion, Slack, Discord…). Never their local data or documents.",
+            paths: electronPaths,
+            contentsOnly: false,
+            minAgeDays: 7,
+            skipRunningApps: true,
+            tier: .safe
+        ))
+        rules.append(CleaningRule(
+            id: "claude-desktop-vm-bundles",
+            category: .developer,
+            title: "Claude local-agent VM images",
+            detail: "Downloaded VM images for Claude Desktop's local agent. Re-downloaded when needed.",
+            paths: [lib.appending(path: "Application Support/Claude/vm_bundles")],
+            contentsOnly: false,
+            minAgeDays: 7,
+            tier: .review
+        ))
+
+        // MARK: Mobile toolchains (Android emulators & SDK)
+
+        rules.append(CleaningRule(
+            id: "android-avd",
+            category: .developer,
+            title: "Android emulators",
+            detail: "Android Virtual Devices. Each is a full emulator instance you can recreate in Android Studio.",
+            paths: [home.appending(path: ".android/avd")],
+            contentsOnly: true,
+            extensions: ["avd"],
+            minAgeDays: 0,
+            tier: .review
+        ))
+        rules.append(CleaningRule(
+            id: "android-sdk-images",
+            category: .developer,
+            title: "Android SDK images",
+            detail: "Downloaded system images and NDK versions. Re-downloadable via the SDK manager.",
+            paths: [
+                lib.appending(path: "Android/sdk/system-images"),
+                lib.appending(path: "Android/sdk/ndk"),
+            ],
+            contentsOnly: false,
+            minAgeDays: 30,
+            tier: .review
+        ))
 
         // MARK: Installers
 
@@ -276,6 +412,25 @@ public enum RuleCatalog {
             paths: [lib.appending(path: "Application Support/MobileSync/Backup")],
             minAgeDays: 0,
             tier: .explicitOnly
+        ))
+
+        // MARK: Orphan tool dotfiles (stale only)
+
+        rules.append(CleaningRule(
+            id: "home-tool-dotfiles",
+            category: .appLeftovers,
+            title: "Stale tool folders",
+            detail: "Home-folder state from dev tools you may no longer use. Only shown when untouched for a month.",
+            paths: [
+                home.appending(path: ".codeium"),
+                home.appending(path: ".antigravity"),
+                home.appending(path: ".agents"),
+                home.appending(path: ".cagent"),
+                home.appending(path: ".aspnet"),
+            ],
+            contentsOnly: false,
+            minAgeDays: 30,
+            tier: .review
         ))
 
         // MARK: Trash

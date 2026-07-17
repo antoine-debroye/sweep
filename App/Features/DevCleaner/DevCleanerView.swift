@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import SweepCore
 
 @MainActor
@@ -6,10 +7,12 @@ import SweepCore
 final class DevCleanerModel {
     var items: [ScanItem] = []
     var artifacts: [ScanItem] = []
+    var worktrees: [AgentWorktree] = []
     var selection: Set<String> = []
     var scanning = false
     var artifactMinAgeDays = 30
     var statusMessage: String?
+    var dockerDF: String?
     var toolOutputs: [String: ToolRun] = [:]
 
     struct ToolRun {
@@ -23,10 +26,14 @@ final class DevCleanerModel {
         scanning = true
         items = []
         artifacts = []
+        worktrees = []
         selection = []
         statusMessage = nil
 
-        let engine = ScanEngine(policy: model.policy, whitelist: model.settings.whitelist)
+        // Editor-cache rules use skipRunningApps, so the engine needs the live
+        // bundle ids or the guard is a no-op.
+        let running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier?.lowercased() })
+        let engine = ScanEngine(policy: model.policy, whitelist: model.settings.whitelist, runningBundleIDs: running)
         let devRules = RuleCatalog.rules().filter { $0.category == .developer }
         let devFolders = model.settings.devFolders.map { URL(fileURLWithPath: $0) }
         let minAge = artifactMinAgeDays
@@ -41,12 +48,21 @@ final class DevCleanerModel {
                 ProjectArtifactScanner.scan(devFolders: devFolders, minAgeDays: minAge, policy: policy)
             }.value
             self.artifacts = found
+
+            self.worktrees = await WorktreeScanner.scan(devFolders: devFolders, policy: policy)
+
             self.scanning = false
+            self.fetchDockerDF()
         }
     }
 
+    /// Clean and orphaned worktrees can be reclaimed; dirty/unverified are locked.
+    var selectableWorktreeItems: [ScanItem] {
+        worktrees.filter { $0.state.isSelectable }.map(\.scanItem)
+    }
+
     var selectedItems: [ScanItem] {
-        (items + artifacts).filter { selection.contains($0.id) }
+        (items + artifacts + selectableWorktreeItems).filter { selection.contains($0.id) }
     }
 
     var selectedSize: Int64 {
@@ -65,8 +81,20 @@ final class DevCleanerModel {
             let removed = Set(session.items.map(\.originalPath))
             self.items.removeAll { removed.contains($0.url.path) }
             self.artifacts.removeAll { removed.contains($0.url.path) }
+            self.worktrees.removeAll { removed.contains($0.url.path) }
             self.selection = []
             self.statusMessage = "Freed \(session.totalFreed.sweepBytes)."
+        }
+    }
+
+    private func fetchDockerDF() {
+        guard let docker = ["/opt/homebrew/bin/docker", "/usr/local/bin/docker"]
+            .first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else { return }
+        Task {
+            let result = await ProcessRunner.run(docker, ["system", "df", "--format", "{{.Type}}: {{.Reclaimable}}"])
+            if result.status == 0, !result.stdout.isEmpty {
+                self.dockerDF = result.stdout
+            }
         }
     }
 
@@ -170,6 +198,12 @@ struct DevCleanerView: View {
                     itemsSection
                 }
 
+                if !dev.worktrees.isEmpty {
+                    worktreeSection
+                }
+
+                cleanBar
+
                 toolsSection
             }
             .padding(24)
@@ -179,6 +213,56 @@ struct DevCleanerView: View {
                 dev.scan(model: model)
             }
         }
+    }
+
+    private var worktreeSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("AI agent worktrees")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("git-checked · dirty ones are locked")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(dev.worktrees) { wt in
+                HStack(spacing: 10) {
+                    if wt.state.isLocked {
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Theme.coral)
+                            .frame(width: 18)
+                            .help(wt.state == .dirty ? "Has uncommitted changes — protected" : "Couldn't verify — protected")
+                    } else {
+                        Toggle("", isOn: Binding(
+                            get: { dev.selection.contains(wt.scanItem.id) },
+                            set: { on in
+                                if on { dev.selection.insert(wt.scanItem.id) }
+                                else { dev.selection.remove(wt.scanItem.id) }
+                            }
+                        ))
+                        .toggleStyle(.checkbox)
+                        .labelsHidden()
+                    }
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(wt.name)
+                            .font(.system(size: 12, weight: .medium))
+                            .lineLimit(1)
+                        Text(wt.branch.map { "branch \($0)" } ?? "worktree")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    worktreeBadge(wt)
+                    ByteText(bytes: wt.size, font: .system(size: 11.5, weight: .semibold, design: .rounded))
+                        .frame(width: 70, alignment: .trailing)
+                }
+            }
+            Text("Clean and orphaned worktrees go to the Trash (recreatable). Worktrees with uncommitted work are never offered.")
+                .font(.system(size: 10.5))
+                .foregroundStyle(.tertiary)
+        }
+        .sweepCard()
     }
 
     private var itemsSection: some View {
@@ -203,7 +287,31 @@ struct DevCleanerView: View {
                     DevItemRow(item: item)
                 }
             }
+        }
+        .sweepCard()
+    }
+
+    @ViewBuilder
+    private func worktreeBadge(_ wt: AgentWorktree) -> some View {
+        switch wt.state {
+        case .dirty:
+            StatusPill(text: "\(wt.dirtyCount) uncommitted", color: Theme.coral)
+        case .orphaned:
+            StatusPill(text: "orphaned", color: Theme.amber)
+        case .unverified:
+            StatusPill(text: "unverified", color: .gray)
+        case .clean:
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private var cleanBar: some View {
+        if !dev.selection.isEmpty {
             HStack {
+                Text("\(dev.selectedItems.count) selected")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
                 Spacer()
                 Button {
                     dev.clean(model: model)
@@ -211,10 +319,9 @@ struct DevCleanerView: View {
                     Label("Clean \(dev.selectedSize.sweepBytes)", systemImage: "sparkles")
                 }
                 .buttonStyle(HeroButtonStyle())
-                .disabled(dev.selection.isEmpty)
             }
+            .sweepCard()
         }
-        .sweepCard()
     }
 
     private var toolsSection: some View {
@@ -245,6 +352,14 @@ struct DevCleanerView: View {
                             Button("Run") { dev.run(tool) }
                                 .buttonStyle(SecondaryButtonStyle())
                         }
+                    }
+                    if tool.id == "docker", let df = dev.dockerDF {
+                        Text("Reclaimable now:\n\(df)")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(8)
+                            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
                     }
                     if let output = run?.output {
                         Text(output)

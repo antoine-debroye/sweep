@@ -8,6 +8,7 @@ enum AppSection: String, CaseIterable, Identifiable {
     case memory
     case uninstaller
     case largeFiles
+    case aiModels
     case devCleaner
     case optimize
     case history
@@ -22,6 +23,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .memory: "Memory"
         case .uninstaller: "Apps"
         case .largeFiles: "Large Files"
+        case .aiModels: "AI Models"
         case .devCleaner: "Dev Cleaner"
         case .optimize: "Optimize"
         case .history: "History"
@@ -36,6 +38,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .memory: "memorychip"
         case .uninstaller: "square.grid.2x2"
         case .largeFiles: "doc.badge.clock"
+        case .aiModels: "brain"
         case .devCleaner: "hammer"
         case .optimize: "wand.and.stars"
         case .history: "clock.arrow.circlepath"
@@ -56,6 +59,7 @@ final class AppModel {
     let memory = MemoryModel()
     let uninstaller = UninstallerModel()
     let largeFiles = LargeFilesModel()
+    let aiModels = AIModelsModel()
     let devCleaner = DevCleanerModel()
     let optimize = OptimizeModel()
 
