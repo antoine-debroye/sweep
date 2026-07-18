@@ -4,9 +4,23 @@ public struct LargeFile: Sendable, Identifiable {
     public let url: URL
     public let size: Int64
     public let modified: Date?
+    public let created: Date?
     public let lastAccessed: Date?
     public var id: String { url.path }
     public var name: String { url.lastPathComponent }
+
+    /// Anything before this is almost certainly broken metadata, not a real date.
+    /// Some files report a near-epoch `contentModificationDate` (shown as
+    /// "46 yr ago"); we treat those as unknown so date-sorting stays meaningful.
+    public static let plausibleDateFloor = Date(timeIntervalSince1970: 946_684_800) // 2000-01-01
+
+    /// The most trustworthy human date: modification if plausible, else creation,
+    /// else `nil` (rendered as "Unknown date").
+    public var displayDate: Date? {
+        if let modified, modified >= Self.plausibleDateFloor { return modified }
+        if let created, created >= Self.plausibleDateFloor { return created }
+        return nil
+    }
 }
 
 /// Finds big files under the user's home. Read-only discovery: deleting is
@@ -53,7 +67,7 @@ public enum LargeFileScanner {
         let fm = FileManager()
         let keys: [URLResourceKey] = [
             .isRegularFileKey, .totalFileAllocatedSizeKey, .fileAllocatedSizeKey,
-            .contentModificationDateKey, .contentAccessDateKey, .isPackageKey,
+            .contentModificationDateKey, .creationDateKey, .contentAccessDateKey, .isPackageKey,
         ]
         var emitted = 0
         let libraryPath = policy.home.appending(path: "Library").path
@@ -100,6 +114,7 @@ public enum LargeFileScanner {
                     url: url,
                     size: size,
                     modified: values.contentModificationDate,
+                    created: values.creationDate,
                     lastAccessed: values.contentAccessDate
                 ))
             }

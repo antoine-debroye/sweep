@@ -9,6 +9,7 @@ enum AppSection: String, CaseIterable, Identifiable {
     case memory
     case uninstaller
     case largeFiles
+    case diskExplorer
     case aiModels
     case devCleaner
     case optimize
@@ -24,6 +25,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .memory: "Memory"
         case .uninstaller: "Apps"
         case .largeFiles: "Large Files"
+        case .diskExplorer: "Disk Explorer"
         case .aiModels: "AI Models"
         case .devCleaner: "Dev Cleaner"
         case .optimize: "Optimize"
@@ -39,6 +41,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .memory: "memorychip"
         case .uninstaller: "square.grid.2x2"
         case .largeFiles: "doc.badge.clock"
+        case .diskExplorer: "chart.pie.fill"
         case .aiModels: "brain"
         case .devCleaner: "hammer"
         case .optimize: "wand.and.stars"
@@ -65,9 +68,11 @@ final class AppModel {
     let memory = MemoryModel()
     let uninstaller = UninstallerModel()
     let largeFiles = LargeFilesModel()
+    let diskExplorer = DiskExplorerModel()
     let aiModels = AIModelsModel()
     let devCleaner = DevCleanerModel()
     let optimize = OptimizeModel()
+    let updater: UpdateChecker
 
     var section: AppSection = .dashboard
     var fullDiskAccess = false
@@ -87,6 +92,7 @@ final class AppModel {
 
     init() {
         smartClean = SmartCleanModel()
+        updater = UpdateChecker(settings: settings)
         AppModel.shared = self
     }
 
@@ -115,6 +121,12 @@ final class AppModel {
         let scheduler = AutoTrimScheduler(model: self)
         autoTrim = scheduler
         scheduler.start()
+
+        // Quietly check for an app update in the background (only if the user has
+        // stored a token and left auto-check on). Errors stay silent here.
+        if settings.autoUpdateCheckEnabled, GitHubTokenStore.hasToken {
+            Task { await updater.check(manual: false) }
+        }
     }
 
     func refreshDisk() {

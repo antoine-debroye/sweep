@@ -2,6 +2,19 @@ import SwiftUI
 import AppKit
 import SweepCore
 
+enum LargeFileSort: String, CaseIterable, Identifiable {
+    case largest, oldest, newest, name
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .largest: "Largest"
+        case .oldest: "Oldest first"
+        case .newest: "Newest first"
+        case .name: "Name"
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class LargeFilesModel {
@@ -10,8 +23,33 @@ final class LargeFilesModel {
     var selection: Set<String> = []
     var minSizeMB: Int = 100
     var statusMessage: String?
+    var sort: LargeFileSort = .largest { didSet { applySort() } }
 
     private var scanTask: Task<Void, Never>?
+
+    /// Sorts `files` in place per the current `sort`. Files with no plausible
+    /// date (unknown) fall to the end of date sorts, ordered by size.
+    func applySort() {
+        switch sort {
+        case .largest:
+            files.sort { $0.size > $1.size }
+        case .oldest:
+            files.sort { Self.dateOrder($0, $1, ascending: true) }
+        case .newest:
+            files.sort { Self.dateOrder($0, $1, ascending: false) }
+        case .name:
+            files.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        }
+    }
+
+    private static func dateOrder(_ a: LargeFile, _ b: LargeFile, ascending: Bool) -> Bool {
+        switch (a.displayDate, b.displayDate) {
+        case let (l?, r?): return ascending ? l < r : l > r
+        case (nil, _?): return false   // unknown dates last
+        case (_?, nil): return true
+        case (nil, nil): return a.size > b.size
+        }
+    }
 
     func scan(model: AppModel) {
         guard !scanning else { return }
@@ -38,14 +76,14 @@ final class LargeFilesModel {
                 buffer.append(file)
                 if buffer.count >= 25 {
                     self.files.append(contentsOf: buffer)
-                    self.files.sort { $0.size > $1.size }
+                    self.applySort()
                     buffer.removeAll(keepingCapacity: true)
                     await Task.yield()   // let the List render this batch
                 }
             }
             if !buffer.isEmpty {
                 self.files.append(contentsOf: buffer)
-                self.files.sort { $0.size > $1.size }
+                self.applySort()
             }
             self.scanning = false
         }
@@ -108,13 +146,17 @@ struct LargeFilesView: View {
                     subtitle: "Big files in your home folder. Nothing is selected for you — review and choose."
                 )
                 Spacer()
+                Picker("Sort", selection: Binding(get: { large.sort }, set: { large.sort = $0 })) {
+                    ForEach(LargeFileSort.allCases) { Text($0.label).tag($0) }
+                }
+                .frame(width: 150)
                 Picker("Min size", selection: Binding(get: { large.minSizeMB }, set: { large.minSizeMB = $0 })) {
                     Text("100 MB").tag(100)
                     Text("250 MB").tag(250)
                     Text("500 MB").tag(500)
                     Text("1 GB").tag(1000)
                 }
-                .frame(width: 200)
+                .frame(width: 150)
                 if large.scanning {
                     Button("Stop") { large.cancel() }
                         .buttonStyle(SecondaryButtonStyle())
@@ -166,12 +208,11 @@ struct LargeFilesView: View {
                                     .help(file.url.path)
                             }
                             Spacer()
-                            if let modified = file.modified {
-                                Text(modified.sweepRelative)
-                                    .font(.system(size: 10.5))
-                                    .foregroundStyle(.tertiary)
-                                    .frame(width: 70, alignment: .trailing)
-                            }
+                            Text(file.displayDate?.sweepRelative ?? "Unknown date")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.tertiary)
+                                .frame(width: 88, alignment: .trailing)
+                                .help(file.displayDate.map { "Last modified \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "No reliable date on this file")
                             ByteText(bytes: file.size, font: .system(size: 12, weight: .semibold, design: .rounded))
                                 .frame(width: 74, alignment: .trailing)
                         }
@@ -205,6 +246,12 @@ struct LargeFilesView: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
+                    let allSelected = !large.files.isEmpty && large.selection.count == large.files.count
+                    Button(allSelected ? "Clear" : "Select all") {
+                        large.selection = allSelected ? [] : Set(large.files.map(\.id))
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .disabled(large.files.isEmpty)
                     Button {
                         large.moveToTrash(model: model)
                     } label: {

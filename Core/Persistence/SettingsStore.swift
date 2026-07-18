@@ -20,6 +20,8 @@ public final class SettingsStore {
     public var lastAutoTrim: Date? { didSet { defaults.set(lastAutoTrim, forKey: "lastAutoTrim") } }
     public var notificationsEnabled: Bool { didSet { defaults.set(notificationsEnabled, forKey: "notificationsEnabled") } }
     public var appearance: AppAppearance { didSet { defaults.set(appearance.rawValue, forKey: "appearance") } }
+    public var autoUpdateCheckEnabled: Bool { didSet { defaults.set(autoUpdateCheckEnabled, forKey: "autoUpdateCheckEnabled") } }
+    public var lastUpdateCheck: Date? { didSet { defaults.set(lastUpdateCheck, forKey: "lastUpdateCheck") } }
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -34,6 +36,8 @@ public final class SettingsStore {
         self.lastAutoTrim = defaults.object(forKey: "lastAutoTrim") as? Date
         self.notificationsEnabled = defaults.object(forKey: "notificationsEnabled") as? Bool ?? true
         self.appearance = (defaults.string(forKey: "appearance")).flatMap(AppAppearance.init(rawValue:)) ?? .system
+        self.autoUpdateCheckEnabled = defaults.object(forKey: "autoUpdateCheckEnabled") as? Bool ?? true
+        self.lastUpdateCheck = defaults.object(forKey: "lastUpdateCheck") as? Date
     }
 
     private static func detectDevFolders() -> [String] {
