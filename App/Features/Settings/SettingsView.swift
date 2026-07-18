@@ -6,6 +6,9 @@ import SweepCore
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var tokenInput = ""
+    @State private var hasToken = GitHubTokenStore.hasToken
+    @State private var tokenMessage: String?
 
     var body: some View {
         @Bindable var settings = model.settings
@@ -221,10 +224,18 @@ struct SettingsView: View {
                         .foregroundStyle(.tertiary)
                 }
 
+                // MARK: Updates
+                settingsCard("Updates", symbol: "arrow.down.circle") {
+                    Toggle("Check for updates automatically", isOn: $settings.autoUpdateCheckEnabled)
+                    tokenSection
+                    Divider()
+                    updateStatusRow
+                }
+
                 // MARK: About
                 settingsCard("About", symbol: "info.circle") {
                     HStack {
-                        Text("Sweep 1.0")
+                        Text("Sweep \(appVersion)")
                             .font(.system(size: 12, weight: .semibold))
                         Spacer()
                         Text("Built for Antoine")
@@ -238,7 +249,157 @@ struct SettingsView: View {
         .onAppear {
             model.checkFullDiskAccess()
             model.broker.refreshHelperState()
+            hasToken = GitHubTokenStore.hasToken
         }
+    }
+
+    // MARK: - Updates UI
+
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+    }
+
+    /// Token entry (or "saved" state) — updates pull from the private repo, so a
+    /// GitHub token with read access is required.
+    @ViewBuilder private var tokenSection: some View {
+        if hasToken {
+            HStack {
+                Image(systemName: "checkmark.seal.fill").foregroundStyle(Theme.mint)
+                Text("GitHub access token saved")
+                    .font(.system(size: 11.5))
+                Spacer()
+                Button("Remove") { removeToken() }
+                    .buttonStyle(SecondaryButtonStyle())
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Updates come from the private sweep repo. Paste a GitHub token with read access (a fine-grained token with Contents: Read-only), or import your gh CLI login.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                HStack {
+                    SecureField("GitHub access token", text: $tokenInput)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Save") { saveToken(tokenInput) }
+                        .buttonStyle(SecondaryButtonStyle())
+                        .disabled(tokenInput.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                Button { useGitHubCLILogin() } label: {
+                    Label("Use my gh CLI login", systemImage: "terminal")
+                }
+                .buttonStyle(SecondaryButtonStyle())
+            }
+        }
+        if let tokenMessage {
+            Text(tokenMessage)
+                .font(.system(size: 10.5))
+                .foregroundStyle(Theme.coral)
+        }
+    }
+
+    @ViewBuilder private var updateStatusRow: some View {
+        switch model.updater.state {
+        case .checking: busyRow("Checking for updates…")
+        case .downloading: busyRow("Downloading update…")
+        case .installing: busyRow("Installing — Sweep will relaunch…")
+        case .available(let release):
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "sparkles").foregroundStyle(Theme.accentGradient)
+                    Text("Update available: \(release.displayName)")
+                        .font(.system(size: 12, weight: .semibold))
+                    Spacer()
+                }
+                if !release.notes.isEmpty {
+                    ScrollView {
+                        Text(releaseNotesSnippet(release.notes))
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 90)
+                }
+                HStack {
+                    Button { Task { await model.updater.installUpdate() } } label: {
+                        Label("Update & Relaunch", systemImage: "arrow.down.circle.fill")
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    Spacer()
+                }
+            }
+        default: // .idle, .upToDate, .failed
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Current version \(appVersion)")
+                        .font(.system(size: 11.5))
+                    if case .upToDate = model.updater.state {
+                        Text("You're up to date.")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(Theme.mint)
+                    } else if case .failed(let message) = model.updater.state {
+                        Text(message)
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(Theme.coral)
+                    } else if let last = model.settings.lastUpdateCheck {
+                        Text("Last checked \(last.sweepRelative)")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Button { Task { await model.updater.check(manual: true) } } label: {
+                    Label("Check now", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(SecondaryButtonStyle())
+                .disabled(!hasToken)
+            }
+        }
+    }
+
+    private func busyRow(_ label: String) -> some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text(label).font(.system(size: 11.5)).foregroundStyle(.secondary)
+            Spacer()
+        }
+    }
+
+    /// First ~6 non-empty lines of the release notes, with the machine-readable
+    /// `zip-sha256:` line filtered out.
+    private func releaseNotesSnippet(_ notes: String) -> String {
+        notes
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.lowercased().hasPrefix("zip-sha256:") }
+            .prefix(6)
+            .joined(separator: "\n")
+    }
+
+    private func saveToken(_ token: String) {
+        tokenMessage = nil
+        guard GitHubTokenStore.save(token) else {
+            tokenMessage = "Couldn't save the token to the Keychain."
+            return
+        }
+        tokenInput = ""
+        hasToken = GitHubTokenStore.hasToken
+        Task { await model.updater.check(manual: true) }
+    }
+
+    private func useGitHubCLILogin() {
+        tokenMessage = nil
+        guard let token = GitHubTokenStore.importFromGitHubCLI() else {
+            tokenMessage = "Couldn't read a token from gh. Make sure the GitHub CLI is installed and you've run `gh auth login`."
+            return
+        }
+        saveToken(token)
+    }
+
+    private func removeToken() {
+        GitHubTokenStore.delete()
+        hasToken = false
+        tokenInput = ""
+        tokenMessage = nil
+        model.updater.reset()
     }
 
     private func settingsCard(_ title: String, symbol: String, @ViewBuilder content: () -> some View) -> some View {

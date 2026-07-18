@@ -92,6 +92,31 @@ struct RootView: View {
 
     private var sidebarFooter: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if model.updater.updateAvailable {
+                Button {
+                    model.section = .settings
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Theme.accentGradient)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Update available")
+                                .font(.system(size: 11, weight: .semibold))
+                            if let release = model.updater.availableRelease {
+                                Text(release.displayName)
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                    }
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.accentGradient.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+            }
             if let disk = model.disk {
                 HStack(spacing: 8) {
                     Image(systemName: "internaldrive.fill")

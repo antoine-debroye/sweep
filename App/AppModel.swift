@@ -68,6 +68,7 @@ final class AppModel {
     let aiModels = AIModelsModel()
     let devCleaner = DevCleanerModel()
     let optimize = OptimizeModel()
+    let updater: UpdateChecker
 
     var section: AppSection = .dashboard
     var fullDiskAccess = false
@@ -87,6 +88,7 @@ final class AppModel {
 
     init() {
         smartClean = SmartCleanModel()
+        updater = UpdateChecker(settings: settings)
         AppModel.shared = self
     }
 
@@ -115,6 +117,12 @@ final class AppModel {
         let scheduler = AutoTrimScheduler(model: self)
         autoTrim = scheduler
         scheduler.start()
+
+        // Quietly check for an app update in the background (only if the user has
+        // stored a token and left auto-check on). Errors stay silent here.
+        if settings.autoUpdateCheckEnabled, GitHubTokenStore.hasToken {
+            Task { await updater.check(manual: false) }
+        }
     }
 
     func refreshDisk() {

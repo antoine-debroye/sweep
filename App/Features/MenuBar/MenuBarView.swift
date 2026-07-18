@@ -62,6 +62,34 @@ struct MenuBarView: View {
                     .foregroundStyle(Theme.mint)
             }
 
+            if model.updater.updateAvailable {
+                Divider()
+                Button {
+                    openMain(section: .settings)
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Theme.accentGradient)
+                            .frame(width: 18)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Update available")
+                                .font(.system(size: 12.5, weight: .semibold))
+                            if let release = model.updater.availableRelease {
+                                Text(release.displayName)
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                    }
+                    .contentShape(Rectangle())
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, 6)
+                }
+                .buttonStyle(.plain)
+            }
+
             Divider()
 
             HStack {
