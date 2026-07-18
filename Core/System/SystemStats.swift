@@ -108,9 +108,26 @@ public enum ProcessStats {
 
 public struct DiskSnapshot: Sendable {
     public let total: Int64
+    /// Honest free space, excluding APFS purgeable. This is what Sweep shows as
+    /// "available" — unlike the optimistic figure macOS reports for "important
+    /// usage", it doesn't pretend reclaimable space is already free.
     public let available: Int64
+    /// Reclaimable (purgeable) space macOS can free on demand. Surfaced on its
+    /// own, never counted as free space.
+    public let purgeable: Int64
+
+    public init(total: Int64, available: Int64, purgeable: Int64 = 0) {
+        self.total = total
+        self.available = available
+        self.purgeable = purgeable
+    }
+
     public var used: Int64 { max(0, total - available) }
     public var usedFraction: Double { total > 0 ? Double(used) / Double(total) : 0 }
+    /// Free space counting purgeable, i.e. what macOS advertises as "available
+    /// for important usage". Used for low-disk thresholds — where reclaimable
+    /// space genuinely counts — but not for the honest "available" display.
+    public var opportunisticAvailable: Int64 { available + purgeable }
 }
 
 public enum DiskStats {
@@ -118,11 +135,16 @@ public enum DiskStats {
         let url = URL(fileURLWithPath: "/")
         guard let values = try? url.resourceValues(forKeys: [
             .volumeTotalCapacityKey,
+            .volumeAvailableCapacityKey,
             .volumeAvailableCapacityForImportantUsageKey,
         ]),
         let total = values.volumeTotalCapacity else { return nil }
-        let available = values.volumeAvailableCapacityForImportantUsage ?? 0
-        return DiskSnapshot(total: Int64(total), available: available)
+        // Optimistic figure (includes purgeable) vs. the honest, conservative
+        // free-space figure. purgeable is the difference between them.
+        let importantUsage = values.volumeAvailableCapacityForImportantUsage ?? 0
+        let honest = values.volumeAvailableCapacity.map(Int64.init) ?? importantUsage
+        let purgeable = max(0, importantUsage - honest)
+        return DiskSnapshot(total: Int64(total), available: honest, purgeable: purgeable)
     }
 }
 

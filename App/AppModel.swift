@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import SweepCore
 import UserNotifications
 
@@ -50,6 +51,11 @@ enum AppSection: String, CaseIterable, Identifiable {
 @MainActor
 @Observable
 final class AppModel {
+    /// The live app model, so non-SwiftUI entry points (the Finder service via
+    /// `AppDelegate`) can reach it. Held strongly by `SweepApp`'s `@State`.
+    /// (Static — not tracked by `@Observable`, which only tracks instance state.)
+    static private(set) weak var shared: AppModel?
+
     let settings = SettingsStore.shared
     let broker = PrivilegeBroker()
     let history = HistoryStore.shared
@@ -65,15 +71,36 @@ final class AppModel {
 
     var section: AppSection = .dashboard
     var fullDiskAccess = false
+    /// Set by the Finder "Uninstall with Sweep" service; `RootView` consumes it
+    /// once the window is up and routes to the uninstaller.
+    var pendingExternalUninstall: URL?
     var disk: DiskSnapshot?
     var lifetimeFreed: Int64 = 0
     var lastClean: Date?
+    /// True while a manual "Run auto-trim now" is in flight. Observed by the UI;
+    /// `AutoTrimScheduler` isn't `@Observable`, so its own `running` flag can't
+    /// drive SwiftUI directly.
+    private(set) var autoTrimRunning = false
 
     private var autoTrim: AutoTrimScheduler?
     private var bootstrapped = false
 
     init() {
         smartClean = SmartCleanModel()
+        AppModel.shared = self
+    }
+
+    /// Entry point for the Finder service: validate the bundle, route the UI to
+    /// the uninstaller, and bring a window forward (Sweep may be menu-bar only).
+    func handleExternalUninstall(url: URL) {
+        guard UninstallGuard.mayRemoveAppBundle(url) else { return }
+        pendingExternalUninstall = url
+        section = .uninstaller
+        // Only reopen if the main window is gone (menu-bar-only state); otherwise
+        // `RootView.onChange` picks up the pending URL in the existing window.
+        let hasVisibleWindow = NSApp.windows.contains { $0.isVisible && $0.canBecomeMain }
+        if !hasVisibleWindow { WindowOpener.shared.open?("main") }
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     func bootstrap() async {
@@ -92,6 +119,15 @@ final class AppModel {
 
     func refreshDisk() {
         disk = DiskStats.root()
+    }
+
+    /// Runs an auto-trim immediately (same Safe-tier, Trash-first pass the
+    /// scheduler performs). The scheduler logs to History and refreshes stats.
+    func runAutoTrimNow() async {
+        guard let autoTrim, !autoTrimRunning else { return }
+        autoTrimRunning = true
+        defer { autoTrimRunning = false }
+        await autoTrim.run(reason: "manual")
     }
 
     func refreshHistorySummary() async {
@@ -118,7 +154,11 @@ final class AppModel {
 
     var lowDiskSpace: Bool {
         guard let disk else { return false }
-        return disk.available < Int64(settings.lowDiskThresholdGB) * 1_000_000_000
+        // Compare against space including reclaimable purgeable (the figure macOS
+        // itself calls "available for important usage"). The honest `available`
+        // shown in the UI is lower; using it here would fire auto-trim whenever
+        // purgeable space is high even though the disk isn't really full.
+        return disk.opportunisticAvailable < Int64(settings.lowDiskThresholdGB) * 1_000_000_000
     }
 }
 

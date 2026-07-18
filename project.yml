@@ -71,6 +71,16 @@ targets:
         NSSupportsAutomaticTermination: false
         NSSupportsSuddenTermination: false
         NSPrincipalClass: NSApplication
+        NSServices:
+          - NSMenuItem:
+              default: Uninstall with Sweep
+            NSMessage: uninstallApp
+            NSPortName: Sweep
+            NSSendTypes:
+              - public.file-url
+              - NSFilenamesPboardType
+            NSSendFileTypes:
+              - com.apple.application-bundle
     entitlements:
       path: App/Sweep.entitlements
       properties:

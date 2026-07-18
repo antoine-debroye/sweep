@@ -121,6 +121,27 @@ public enum RuleDomain: String, Codable, Sendable {
     case system
 }
 
+// MARK: - Appearance
+
+/// The window appearance the user has chosen. `system` follows macOS; the App
+/// layer maps this to a SwiftUI `ColorScheme?` (`system` → `nil`). Kept here,
+/// free of SwiftUI, so `Core` — including `SettingsStore` — stays UI-agnostic.
+public enum AppAppearance: String, Codable, Sendable, CaseIterable, Identifiable {
+    case system
+    case light
+    case dark
+
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .system: "System"
+        case .light: "Light"
+        case .dark: "Dark"
+        }
+    }
+}
+
 // MARK: - Rules
 
 public struct CleaningRule: Sendable, Identifiable {

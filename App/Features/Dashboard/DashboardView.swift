@@ -88,6 +88,12 @@ struct DashboardView: View {
                     Text("\(disk.used.sweepBytes) of \(disk.total.sweepBytes) used")
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
+                    if disk.purgeable > 0 {
+                        Text("+\(disk.purgeable.sweepBytes) purgeable — macOS frees this automatically")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.tertiary)
+                            .help("Reclaimable space macOS frees on demand. Sweep doesn't count it as free — other cleaners often do.")
+                    }
                 }
                 Button("Free up space") { model.section = .smartClean }
                     .buttonStyle(SecondaryButtonStyle())

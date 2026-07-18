@@ -32,5 +32,28 @@
 	<false/>
 	<key>NSSupportsSuddenTermination</key>
 	<false/>
+	<key>NSServices</key>
+	<array>
+		<dict>
+			<key>NSMenuItem</key>
+			<dict>
+				<key>default</key>
+				<string>Uninstall with Sweep</string>
+			</dict>
+			<key>NSMessage</key>
+			<string>uninstallApp</string>
+			<key>NSPortName</key>
+			<string>Sweep</string>
+			<key>NSSendTypes</key>
+			<array>
+				<string>public.file-url</string>
+				<string>NSFilenamesPboardType</string>
+			</array>
+			<key>NSSendFileTypes</key>
+			<array>
+				<string>com.apple.application-bundle</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

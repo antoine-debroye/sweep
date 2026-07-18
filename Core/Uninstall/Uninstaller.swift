@@ -29,14 +29,22 @@ public enum AppInventory {
         for root in roots {
             guard let entries = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { continue }
             for entry in entries where entry.pathExtension == "app" {
-                guard let bundle = Bundle(url: entry), let bundleID = bundle.bundleIdentifier else { continue }
-                let name = (fm.displayName(atPath: entry.path) as NSString).deletingPathExtension
-                let version = bundle.infoDictionary?["CFBundleShortVersionString"] as? String
-                let lastUsed = lastUsedDate(for: entry)
-                apps.append(InstalledApp(url: entry, name: name, bundleID: bundleID, version: version, size: nil, lastUsed: lastUsed))
+                if let app = installedApp(at: entry) { apps.append(app) }
             }
         }
         return apps.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// Builds an `InstalledApp` for a single `.app` bundle, or nil if it isn't a
+    /// readable app. Shared by the inventory scan and the Finder "Uninstall with
+    /// Sweep" service (which hands us an arbitrary bundle URL).
+    public static func installedApp(at url: URL) -> InstalledApp? {
+        guard url.pathExtension == "app",
+              let bundle = Bundle(url: url),
+              let bundleID = bundle.bundleIdentifier else { return nil }
+        let name = (FileManager().displayName(atPath: url.path) as NSString).deletingPathExtension
+        let version = bundle.infoDictionary?["CFBundleShortVersionString"] as? String
+        return InstalledApp(url: url, name: name, bundleID: bundleID, version: version, size: nil, lastUsed: lastUsedDate(for: url))
     }
 
     public static func lastUsedDate(for url: URL) -> Date? {
@@ -50,12 +58,50 @@ public enum AppInventory {
 
 // MARK: - Leftover finder
 
+/// How aggressively the leftover finder searches. Higher tiers add more
+/// locations and looser matching; the extra deep-only hits are flagged
+/// `.review` so they're surfaced but never pre-selected.
+public enum MatchDepth: String, Sendable, CaseIterable, Identifiable {
+    /// Exact bundle-id matches only. Safest; may miss some files.
+    case strict
+    /// Adds app-name matches and shared-container / launch-agent prefix matches.
+    /// The default — reproduces Sweep's long-standing behavior, plus a few more
+    /// exact locations.
+    case enhanced
+    /// Also finds team-identifier app groups and heuristic name matches across
+    /// plug-in / extension roots. These extra hits are marked "Review".
+    case deep
+
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .strict: "Strict"
+        case .enhanced: "Enhanced"
+        case .deep: "Deep"
+        }
+    }
+
+    public var blurb: String {
+        switch self {
+        case .strict: "Exact bundle-ID matches only."
+        case .enhanced: "Adds app-name and shared-container matches."
+        case .deep: "Also finds team-ID and heuristic matches to review."
+        }
+    }
+}
+
 /// Locates everything an app scattered across the user's Library (and a few
-/// system locations) for a complete uninstall.
+/// system locations) for a complete uninstall. Confidence is encoded in each
+/// item's `tier`: exact bundle-id / app-name hits are `.explicitOnly` (safe to
+/// pre-select); team-ID and heuristic hits are `.review` (surfaced, not
+/// pre-selected).
 public enum LeftoverFinder {
     public static func find(
         bundleID: String,
         appName: String,
+        teamID: String? = nil,
+        depth: MatchDepth = .enhanced,
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> [ScanItem] {
         let fm = FileManager()
@@ -63,28 +109,69 @@ public enum LeftoverFinder {
         var found: [ScanItem] = []
         var seen = Set<String>()
 
-        // Locations addressed directly by bundle id or app name.
-        var candidates: [(URL, String)] = [
-            (lib.appending(path: "Application Support/\(appName)"), "Application support"),
-            (lib.appending(path: "Application Support/\(bundleID)"), "Application support"),
-            (lib.appending(path: "Caches/\(bundleID)"), "Caches"),
-            (lib.appending(path: "Caches/\(appName)"), "Caches"),
-            (lib.appending(path: "Preferences/\(bundleID).plist"), "Preferences"),
-            (lib.appending(path: "Logs/\(appName)"), "Logs"),
-            (lib.appending(path: "Logs/\(bundleID)"), "Logs"),
-            (lib.appending(path: "Containers/\(bundleID)"), "Container"),
-            (lib.appending(path: "Saved Application State/\(bundleID).savedState"), "Saved state"),
-            (lib.appending(path: "WebKit/\(bundleID)"), "WebKit data"),
-            (lib.appending(path: "HTTPStorages/\(bundleID)"), "HTTP storage"),
-            (lib.appending(path: "Cookies/\(bundleID).binarycookies"), "Cookies"),
-            (lib.appending(path: "Application Scripts/\(bundleID)"), "App scripts"),
+        // (url, label, confidence tier). All depths include the exact bundle-id
+        // locations below.
+        var candidates: [(URL, String, SafetyTier)] = [
+            (lib.appending(path: "Application Support/\(bundleID)"), "Application support", .explicitOnly),
+            (lib.appending(path: "Caches/\(bundleID)"), "Caches", .explicitOnly),
+            (lib.appending(path: "Preferences/\(bundleID).plist"), "Preferences", .explicitOnly),
+            (lib.appending(path: "Preferences/\(bundleID).plist.lockfile"), "Preferences lock", .explicitOnly),
+            (lib.appending(path: "Logs/\(bundleID)"), "Logs", .explicitOnly),
+            (lib.appending(path: "Containers/\(bundleID)"), "Container", .explicitOnly),
+            (lib.appending(path: "Saved Application State/\(bundleID).savedState"), "Saved state", .explicitOnly),
+            (lib.appending(path: "WebKit/\(bundleID)"), "WebKit data", .explicitOnly),
+            (lib.appending(path: "HTTPStorages/\(bundleID)"), "HTTP storage", .explicitOnly),
+            (lib.appending(path: "Cookies/\(bundleID).binarycookies"), "Cookies", .explicitOnly),
+            (lib.appending(path: "Application Scripts/\(bundleID)"), "App scripts", .explicitOnly),
+            (lib.appending(path: "SyncedPreferences/\(bundleID).plist"), "Synced preferences", .explicitOnly),
         ]
+        // Per-host preferences: <bundleID>.<UUID>.plist under Preferences/ByHost.
+        candidates += matching(in: lib.appending(path: "Preferences/ByHost"), containing: bundleID, label: "Per-host preferences", fm: fm)
+            .map { ($0.0, $0.1, SafetyTier.explicitOnly) }
 
-        // Group containers and launch agents need a prefix match.
-        candidates += matching(in: lib.appending(path: "Group Containers"), containing: bundleID, label: "Group container", fm: fm)
-        candidates += matching(in: lib.appending(path: "LaunchAgents"), containing: bundleID, label: "Launch agent", fm: fm)
+        if depth == .enhanced || depth == .deep {
+            candidates += [
+                (lib.appending(path: "Application Support/\(appName)"), "Application support", .explicitOnly),
+                (lib.appending(path: "Caches/\(appName)"), "Caches", .explicitOnly),
+                (lib.appending(path: "Logs/\(appName)"), "Logs", .explicitOnly),
+                (lib.appending(path: "Application Support/CrashReporter/\(appName)"), "Crash reports", .explicitOnly),
+            ]
+            // Shared containers and launch agents addressed by a bundle-id prefix.
+            candidates += matching(in: lib.appending(path: "Group Containers"), containing: bundleID, label: "Group container", fm: fm)
+                .map { ($0.0, $0.1, SafetyTier.explicitOnly) }
+            candidates += matching(in: lib.appending(path: "LaunchAgents"), containing: bundleID, label: "Launch agent", fm: fm)
+                .map { ($0.0, $0.1, SafetyTier.explicitOnly) }
+        }
 
-        for (url, label) in candidates {
+        if depth == .deep {
+            // Team-identifier app groups, e.g. <TEAMID>.com.vendor.app. These are
+            // shared across a vendor's apps, so flag them for review rather than
+            // pre-selecting.
+            if let teamID, teamID.count >= 6 {
+                candidates += matching(in: lib.appending(path: "Group Containers"), containing: teamID, label: "Team app group", fm: fm)
+                    .map { ($0.0, $0.1, SafetyTier.review) }
+            }
+            // Heuristic name matches across plug-in / extension roots. Guarded by a
+            // reasonable app-name length so short, common names don't over-match.
+            if appName.count >= 4 {
+                let heuristicRoots: [(String, String)] = [
+                    ("Internet Plug-Ins", "Internet plug-in"),
+                    ("PreferencePanes", "Preference pane"),
+                    ("QuickLook", "Quick Look extension"),
+                    ("Services", "Service"),
+                    ("Widgets", "Widget"),
+                    ("Screen Savers", "Screen saver"),
+                    ("Input Methods", "Input method"),
+                    ("Logs/DiagnosticReports", "Crash report"),
+                ]
+                for (sub, label) in heuristicRoots {
+                    candidates += matching(in: lib.appending(path: sub), containing: appName, label: label, fm: fm)
+                        .map { ($0.0, $0.1, SafetyTier.review) }
+                }
+            }
+        }
+
+        for (url, label, tier) in candidates {
             let path = url.path
             guard !seen.contains(path), fm.fileExists(atPath: path) else { continue }
             seen.insert(path)
@@ -98,11 +185,18 @@ public enum LeftoverFinder {
                 size: max(stats.size, 1),
                 fileCount: max(stats.fileCount, 1),
                 newestModification: stats.newestModification,
-                tier: .explicitOnly,
+                tier: tier,
                 domain: .user
             ))
         }
-        return found.sorted { $0.size > $1.size }
+        // High-confidence hits first (so pre-selected items lead the list), then
+        // by size within each group.
+        return found.sorted { lhs, rhs in
+            let lReview = lhs.tier == .review
+            let rReview = rhs.tier == .review
+            if lReview != rReview { return !lReview }
+            return lhs.size > rhs.size
+        }
     }
 
     private static func matching(in dir: URL, containing needle: String, label: String, fm: FileManager) -> [(URL, String)] {

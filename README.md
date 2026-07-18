@@ -11,16 +11,18 @@ DMG.
 
 | Module | What you get |
 |---|---|
-| **Dashboard** | Disk gauge, live memory pressure, lifetime-freed counter, one-click Smart Scan |
+| **Dashboard** | Disk gauge, live memory pressure, lifetime-freed counter, one-click Smart Scan. **Honest free-space reporting** — APFS purgeable space is shown separately, never counted as free |
 | **Smart Clean** | One scan across every junk category → review with safety badges → clean with undo |
 | **Memory** | Pressure graph, memory breakdown, top consumers, **Flush RAM** (system `purge`) |
-| **Apps** | Full uninstaller: the bundle plus caches, preferences, containers, launch agents… and a **Leftovers** scanner for apps you deleted long ago |
+| **Apps** | Full uninstaller: the bundle plus caches, preferences, containers, launch agents… with **Strict / Enhanced / Deep** match depth (Deep also finds team-ID app groups and heuristic matches, flagged for review), a **Leftovers** scanner for apps you deleted long ago, and a Finder **“Uninstall with Sweep”** right-click service |
 | **Large Files** | Files ≥100 MB in your home folder, oldest-first review, explicit selection only |
 | **AI Models** | Inventories local LLM/ML models from **Ollama, LM Studio and Hugging Face** with size & last-used; remove selectively. Ollama via its safe `ollama rm`, the rest Trash-first. Never auto-selected |
 | **Dev Cleaner** | Xcode derived data & device support, npm/yarn/pnpm/bun, pip/uv, cargo, gradle, brew, **Cursor/VS Code/Electron caches**, **Claude Desktop VM bundles**, **Android emulators & SDK**, Docker prune (with `docker system df`), stale `node_modules`/`target`/`.build`, and an **AI-agent worktree cleaner** that runs `git status` on each worktree — dirty ones are locked, orphaned ones are reclaimable |
 | **Optimize** | Flush DNS, rebuild Spotlight/LaunchServices, thin Time Machine snapshots, restart Finder/Dock |
 | **History** | Every clean logged; one-click **Undo** restores from Trash |
-| **Auto-Trim** | Background menu-bar agent trims Safe-tier junk untouched for 30+ days, Trash-first, with a notification and undo |
+| **Auto-Trim** | Background menu-bar agent trims Safe-tier junk untouched for 30+ days, Trash-first, with a notification and undo. Configurable interval and low-disk threshold, plus a **Run now** button in Settings |
+
+**Appearance:** Settings offers **System / Light / Dark** — System follows your Mac.
 
 ## Why it's safe
 

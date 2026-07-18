@@ -1,6 +1,22 @@
 import SwiftUI
 import AppKit
+import Security
 import SweepCore
+
+/// Reads an app's code-signing Team Identifier — used to find team-scoped app
+/// groups (`<TEAMID>.com.vendor…`) during a deep uninstall search. Synchronous,
+/// no special entitlement; mirrors the SecCode usage in the privileged helper.
+enum CodeSigning {
+    static func teamIdentifier(for url: URL) -> String? {
+        var staticCode: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(url as CFURL, [], &staticCode) == errSecSuccess,
+              let staticCode else { return nil }
+        var info: CFDictionary?
+        guard SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
+              let dict = info as? [String: Any] else { return nil }
+        return dict[kSecCodeInfoTeamIdentifier as String] as? String
+    }
+}
 
 @MainActor
 @Observable
@@ -14,6 +30,12 @@ final class UninstallerModel {
     var uninstalling = false
     var statusMessage: String?
     var appSizes: [String: Int64] = [:]
+    var matchDepth: MatchDepth = .enhanced {
+        didSet {
+            guard oldValue != matchDepth, let app = selected else { return }
+            findLeftovers(for: app)
+        }
+    }
 
     var orphans: [ScanItem] = []
     var orphanSelection: Set<String> = []
@@ -47,16 +69,41 @@ final class UninstallerModel {
         leftovers = []
         leftoverSelection = []
         statusMessage = nil
+        findLeftovers(for: app)
+    }
+
+    private func findLeftovers(for app: InstalledApp) {
         findingLeftovers = true
-        Task.detached(priority: .userInitiated) { [bundleID = app.bundleID, name = app.name] in
-            let found = LeftoverFinder.find(bundleID: bundleID, appName: name)
+        let depth = matchDepth
+        Task.detached(priority: .userInitiated) { [bundleID = app.bundleID, name = app.name, url = app.url] in
+            let teamID = CodeSigning.teamIdentifier(for: url)
+            let found = LeftoverFinder.find(bundleID: bundleID, appName: name, teamID: teamID, depth: depth)
             await MainActor.run { [weak self] in
                 guard let self, self.selected?.bundleID == bundleID else { return }
                 self.leftovers = found
-                self.leftoverSelection = Set(found.map(\.id))
+                // Pre-select confident matches only; heuristic ".review" hits are
+                // left unchecked for the user to opt into.
+                self.leftoverSelection = Set(found.filter { $0.tier != .review }.map(\.id))
                 self.findingLeftovers = false
             }
         }
+    }
+
+    /// Selects an app by URL that may not be in the scanned `apps` list yet
+    /// (e.g. arriving from the Finder "Uninstall with Sweep" service).
+    func selectExternal(url: URL) {
+        let app: InstalledApp
+        if let existing = apps.first(where: { $0.url == url }) {
+            app = existing
+        } else if let built = AppInventory.installedApp(at: url) {
+            app = built
+            apps.insert(built, at: 0)
+        } else {
+            statusMessage = "That doesn't look like an app Sweep can uninstall."
+            return
+        }
+        computeSize(for: app)
+        select(app)
     }
 
     func isRunning(_ app: InstalledApp) -> Bool {
@@ -262,6 +309,20 @@ struct UninstallerView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                VStack(alignment: .leading, spacing: 4) {
+                    Picker("Search depth", selection: Binding(
+                        get: { uninstaller.matchDepth },
+                        set: { uninstaller.matchDepth = $0 }
+                    )) {
+                        ForEach(MatchDepth.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    Text(uninstaller.matchDepth.blurb)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                }
+
                 if uninstaller.leftovers.isEmpty && !uninstaller.findingLeftovers {
                     Text("No related files found outside the app bundle.")
                         .font(.system(size: 12))
@@ -291,6 +352,9 @@ struct UninstallerView: View {
                                     .help(item.url.path)
                             }
                             Spacer()
+                            if item.tier == .review {
+                                SafetyBadge(tier: item.tier)
+                            }
                             ByteText(bytes: item.size, font: .system(size: 11.5, weight: .semibold, design: .rounded))
                         }
                         .listRowSeparator(.hidden)

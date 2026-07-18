@@ -25,6 +25,10 @@ struct SettingsView: View {
                             }
                         }
                     Toggle("Show notifications after cleans", isOn: $settings.notificationsEnabled)
+                    Picker("Appearance", selection: $settings.appearance) {
+                        ForEach(AppAppearance.allCases) { Text($0.label).tag($0) }
+                    }
+                    .help("System follows your Mac's light/dark setting.")
                 }
 
                 // MARK: Cleaning behavior
@@ -57,6 +61,7 @@ struct SettingsView: View {
                             Text("90 days").tag(90)
                         }
                         Picker("Run every", selection: $settings.autoTrimIntervalHours) {
+                            Text("6 hours").tag(6)
                             Text("12 hours").tag(12)
                             Text("24 hours").tag(24)
                             Text("48 hours").tag(48)
@@ -72,6 +77,31 @@ struct SettingsView: View {
                             Text("Last auto-trim: \(last.sweepRelative)")
                                 .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
+                            let next = last.addingTimeInterval(TimeInterval(settings.autoTrimIntervalHours) * 3600)
+                            Text("Next run: \(next > Date() ? next.sweepRelative : "at the next hourly check")")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("Next run: after the next background check")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        HStack {
+                            Button {
+                                Task { await model.runAutoTrimNow() }
+                            } label: {
+                                if model.autoTrimRunning {
+                                    HStack(spacing: 6) {
+                                        ProgressView().controlSize(.small)
+                                        Text("Trimming…")
+                                    }
+                                } else {
+                                    Label("Run auto-trim now", systemImage: "wand.and.sparkles")
+                                }
+                            }
+                            .buttonStyle(SecondaryButtonStyle())
+                            .disabled(model.autoTrimRunning)
+                            Spacer()
                         }
                     }
                 }

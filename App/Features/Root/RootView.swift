@@ -3,6 +3,7 @@ import SweepCore
 
 struct RootView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         @Bindable var model = model
@@ -45,6 +46,22 @@ struct RootView: View {
             OnboardingView()
                 .environment(model)
         }
+        .onAppear {
+            // Let non-view code (the Finder service) reopen this window.
+            WindowOpener.shared.open = { openWindow(id: $0) }
+            consumePendingUninstall()
+        }
+        .onChange(of: model.pendingExternalUninstall) { _, _ in
+            consumePendingUninstall()
+        }
+    }
+
+    /// Routes a Finder-service request to the uninstaller once the window is up.
+    private func consumePendingUninstall() {
+        guard let url = model.pendingExternalUninstall else { return }
+        model.section = .uninstaller
+        model.uninstaller.selectExternal(url: url)
+        model.pendingExternalUninstall = nil
     }
 
     private func sidebarRow(_ section: AppSection) -> some View {
