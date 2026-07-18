@@ -211,19 +211,8 @@ final class UpdateChecker {
             displayName: raw.name?.isEmpty == false ? raw.name! : raw.tagName,
             notes: raw.body ?? "",
             zipAsset: zip,
-            expectedSHA256: Self.parseSHA256(from: raw.body ?? "")
+            expectedSHA256: ReleaseNotes.parseZipSHA256(from: raw.body ?? "")
         )
-    }
-
-    /// Extracts the hex from a `zip-sha256: <hex>` line in the release notes.
-    static func parseSHA256(from notes: String) -> String? {
-        for line in notes.split(whereSeparator: \.isNewline) {
-            let lower = line.lowercased()
-            guard let range = lower.range(of: "zip-sha256:") else { continue }
-            let hex = line[range.upperBound...].trimmingCharacters(in: .whitespaces)
-            if hex.count == 64, hex.allSatisfy(\.isHexDigit) { return hex }
-        }
-        return nil
     }
 
     private func friendly(_ error: Error) -> String {
