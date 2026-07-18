@@ -1,0 +1,167 @@
+import Foundation
+
+/// One entry in the disk-usage tree: a folder or file with its on-disk size and
+/// a safety/cloud classification. `allocatedSize` is real blocks used on the
+/// volume (what freeing it actually reclaims); `logicalSize` is the apparent
+/// size — the gap between them reveals cloud "online-only" placeholders.
+public struct DiskNode: Identifiable, Sendable {
+    public let url: URL
+    public let name: String
+    public let isDirectory: Bool
+    public let allocatedSize: Int64
+    public let logicalSize: Int64
+    public let fileCount: Int
+    public let newestModification: Date?
+    public let kind: DiskNodeKind
+
+    public var id: String { url.path }
+
+    public init(url: URL, name: String, isDirectory: Bool, allocatedSize: Int64,
+                logicalSize: Int64, fileCount: Int, newestModification: Date?, kind: DiskNodeKind) {
+        self.url = url
+        self.name = name
+        self.isDirectory = isDirectory
+        self.allocatedSize = allocatedSize
+        self.logicalSize = logicalSize
+        self.fileCount = fileCount
+        self.newestModification = newestModification
+        self.kind = kind
+    }
+}
+
+/// How a node may be acted on. Cloud items are never deletable through Sweep
+/// (deleting a materialized cloud file removes the cloud copy too) — they can
+/// only be *offloaded* (evict the local copy, keep the original online).
+public enum DiskNodeKind: Sendable, Equatable {
+    case safeToDelete                        // regenerable (caches, build output…)
+    case review                              // real user data — delete deliberately
+    case protectedPath                       // hard-protected, never deletable
+    case cloudOffloadable(localBytes: Int64) // synced + downloaded locally → reclaimable
+    case cloudOnlineOnly                     // already online-only → no local space to reclaim
+
+    public var isDeletable: Bool {
+        switch self {
+        case .safeToDelete, .review: true
+        default: false
+        }
+    }
+
+    public var isCloud: Bool {
+        switch self {
+        case .cloudOffloadable, .cloudOnlineOnly: true
+        default: false
+        }
+    }
+
+    /// Local bytes reclaimable by offloading (0 unless materialized cloud data).
+    public var offloadableBytes: Int64 {
+        if case .cloudOffloadable(let bytes) = self { return bytes }
+        return 0
+    }
+}
+
+public enum DiskTreeScanner {
+    /// Materialized cloud data below this is treated as noise, not worth flagging.
+    static let offloadFloor: Int64 = 1_000_000  // 1 MB
+
+    /// Lists the direct children of `url`, sizing folders fully (recursively, in
+    /// parallel) and files by their allocated + logical bytes, classifying each,
+    /// sorted largest-first. Lazy: one level per call, so drilling is snappy.
+    public static func children(of url: URL, policy: SafetyPolicy) async -> [DiskNode] {
+        let fm = FileManager()
+        let keys: Set<URLResourceKey> = [
+            .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
+            .totalFileAllocatedSizeKey, .fileAllocatedSizeKey,
+            .totalFileSizeKey, .fileSizeKey,
+            .contentModificationDateKey, .isUbiquitousItemKey,
+        ]
+        guard let entries = try? fm.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: Array(keys),
+            options: []   // include hidden — dotfolders (.ollama, .cache…) can be huge
+        ) else { return [] }
+
+        return await withTaskGroup(of: DiskNode?.self) { group in
+            for entry in entries {
+                group.addTask { node(for: entry, keys: keys, policy: policy) }
+            }
+            var nodes: [DiskNode] = []
+            for await maybe in group {
+                if let node = maybe { nodes.append(node) }
+            }
+            nodes.sort { $0.allocatedSize > $1.allocatedSize }
+            return nodes
+        }
+    }
+
+    private static func node(for url: URL, keys: Set<URLResourceKey>, policy: SafetyPolicy) -> DiskNode? {
+        guard let values = try? url.resourceValues(forKeys: keys) else { return nil }
+        if values.isSymbolicLink == true { return nil }   // don't follow / double-count links
+
+        let isDir = values.isDirectory == true
+        let isUbiquitous = values.isUbiquitousItem == true
+
+        let allocated: Int64
+        let logical: Int64
+        let fileCount: Int
+        let newest: Date?
+        if isDir {
+            let stats = DirectorySizer.stats(of: url)   // recursive, allocated bytes
+            allocated = stats.size
+            logical = stats.size
+            fileCount = stats.fileCount
+            newest = stats.newestModification
+        } else {
+            allocated = Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
+            logical = Int64(values.totalFileSize ?? values.fileSize ?? 0)
+            fileCount = 1
+            newest = values.contentModificationDate
+        }
+
+        return DiskNode(
+            url: url,
+            name: url.lastPathComponent,
+            isDirectory: isDir,
+            allocatedSize: allocated,
+            logicalSize: logical,
+            fileCount: fileCount,
+            newestModification: newest,
+            kind: classify(url: url, allocated: allocated, logical: logical,
+                           isUbiquitous: isUbiquitous, policy: policy)
+        )
+    }
+
+    /// Pure classifier — no disk access, so it is directly unit-testable.
+    public static func classify(url: URL, allocated: Int64, logical: Int64,
+                                isUbiquitous: Bool, policy: SafetyPolicy) -> DiskNodeKind {
+        let path = url.path
+        let isCloud = isUbiquitous
+            || path.contains("/Library/CloudStorage/")
+            || path.contains("/Library/Mobile Documents/")
+
+        if isCloud {
+            // Online-only placeholders report large logical but ~0 allocated bytes.
+            // Materialized data (allocated a meaningful fraction of logical, above
+            // the noise floor) is what offloading actually reclaims.
+            if allocated > offloadFloor && allocated * 4 >= logical {
+                return .cloudOffloadable(localBytes: allocated)
+            }
+            return .cloudOnlineOnly
+        }
+        if policy.isProtected(url) { return .protectedPath }
+        if isSafeToDelete(url) { return .safeToDelete }
+        return .review
+    }
+
+    /// Conservative allow-list of regenerable locations we're comfortable calling
+    /// safe. Anything not matched stays `.review` (delete deliberately).
+    static func isSafeToDelete(_ url: URL) -> Bool {
+        let name = url.lastPathComponent
+        if ProjectArtifactScanner.artifactNames.contains(name) { return true }
+        let safeNames: Set<String> = ["Caches", ".Trash", "DerivedData", ".cache", "tmp"]
+        if safeNames.contains(name) { return true }
+        let path = url.path
+        let safeMarkers = ["/Library/Caches/", "/DerivedData/", "/Library/Developer/Xcode/DerivedData"]
+        return safeMarkers.contains { path.contains($0) }
+    }
+}

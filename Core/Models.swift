@@ -295,6 +295,7 @@ public enum CleanSource: String, Codable, Sendable {
     case devCleaner
     case menuBar
     case aiModels
+    case diskExplorer
 
     public var label: String {
         switch self {
@@ -305,6 +306,7 @@ public enum CleanSource: String, Codable, Sendable {
         case .devCleaner: "Dev Cleaner"
         case .menuBar: "Quick Clean"
         case .aiModels: "AI Models"
+        case .diskExplorer: "Disk Explorer"
         }
     }
 }
