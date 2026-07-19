@@ -82,9 +82,11 @@ final class HelperService: NSObject, SweepHelperProtocol {
 
 final class HelperDelegate: NSObject, NSXPCListenerDelegate {
     func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
-        // Best-effort caller check. With ad-hoc signing there is no stable team
-        // identifier to pin, so we verify the client's signing identifier. When
-        // the app moves to Developer ID, tighten this with a team requirement.
+        // Caller check: the client must carry our bundle identifier AND be signed
+        // by our Apple Developer Team (Developer ID). Pinning the team stops an
+        // ad-hoc binary that merely claims our identifier from talking to this
+        // root helper. (Debug/ad-hoc builds don't satisfy this and fall back to
+        // the osascript admin path — the helper is a distribution-only feature.)
         if !HelperDelegate.clientIsTrusted(connection) {
             NSLog("Sweep helper: rejecting connection from untrusted client")
             return false
@@ -104,7 +106,11 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate {
             return false
         }
         var requirement: SecRequirement?
-        let requirementString = "identifier \"com.debroye.sweep\"" as CFString
+        let requirementString = """
+        identifier "com.debroye.sweep" \
+        and anchor apple generic \
+        and certificate leaf[subject.OU] = "FC27NYGHX4"
+        """ as CFString
         guard SecRequirementCreateWithString(requirementString, [], &requirement) == errSecSuccess,
               let requirement else {
             return false

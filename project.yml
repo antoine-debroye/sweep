@@ -19,6 +19,13 @@ settings:
     MARKETING_VERSION: "1.1.3"
     SWIFT_EMIT_LOC_STRINGS: NO
     DEAD_CODE_STRIPPING: YES
+  configs:
+    # Release ships with a stable Developer ID identity so the updater's Keychain
+    # trust survives self-updates (ad-hoc changes cdhash every build → re-prompt).
+    # Debug/tests stay ad-hoc: faster, offline-safe, no distribution identity.
+    Release:
+      CODE_SIGN_IDENTITY: "Developer ID Application"
+      DEVELOPMENT_TEAM: "FC27NYGHX4"
 
 targets:
   SweepCore:
