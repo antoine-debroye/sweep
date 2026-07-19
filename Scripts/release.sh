@@ -2,11 +2,15 @@
 # One-command release: merge the current branch into main, bump the version,
 # build the DMG + updater zip, tag, push, and publish a GitHub release.
 #
-#   Scripts/release.sh <version> [--draft] [--dry-run]
+#   Scripts/release.sh <version> [--draft] [--dry-run] [--notarize]
 #
 #   <version>   new marketing version, e.g. 1.1.0 (must be > the current one)
 #   --draft     create the GitHub release as a draft (safe for a trial run)
 #   --dry-run   do everything locally but skip `git push` and `gh release create`
+#   --notarize  notarize + staple the DMG and app (warning-free for others).
+#               Requires a stored notary profile once:
+#                 xcrun notarytool store-credentials sweep-notary \
+#                   --apple-id you@example.com --team-id TEAMID --password app-specific-pw
 #
 # The in-app updater downloads the .zip asset and verifies it against the
 # `zip-sha256:` line this script writes into the release notes.
@@ -19,16 +23,19 @@ REPO="antoine-debroye/sweep"
 VERSION="${1:-}"
 DRAFT=""
 DRY_RUN=""
+NOTARIZE=""
+NOTARY_PROFILE="sweep-notary"
 for arg in "${@:2}"; do
     case "$arg" in
         --draft) DRAFT="--draft" ;;
         --dry-run) DRY_RUN="1" ;;
+        --notarize) NOTARIZE="1" ;;
         *) echo "Unknown option: $arg" >&2; exit 1 ;;
     esac
 done
 
 if [[ -z "$VERSION" ]]; then
-    echo "Usage: Scripts/release.sh <version> [--draft] [--dry-run]" >&2
+    echo "Usage: Scripts/release.sh <version> [--draft] [--dry-run] [--notarize]" >&2
     exit 1
 fi
 if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -40,6 +47,18 @@ fi
 command -v gh >/dev/null        || { echo "Error: gh CLI not found." >&2; exit 1; }
 command -v create-dmg >/dev/null || { echo "Error: create-dmg not found (brew install create-dmg)." >&2; exit 1; }
 gh auth status >/dev/null 2>&1  || { echo "Error: not logged in to gh (run: gh auth login)." >&2; exit 1; }
+
+if [[ -n "$NOTARIZE" ]]; then
+    command -v xcrun >/dev/null || { echo "Error: xcrun not found (install Xcode command-line tools)." >&2; exit 1; }
+    # Validate the stored notary credentials now, before the long build.
+    if ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
+        echo "Error: notary profile '$NOTARY_PROFILE' not found or invalid." >&2
+        echo "Store it once (app-specific password from appleid.apple.com):" >&2
+        echo "  xcrun notarytool store-credentials $NOTARY_PROFILE \\" >&2
+        echo "    --apple-id you@example.com --team-id FC27NYGHX4 --password app-specific-pw" >&2
+        exit 1
+    fi
+fi
 
 if [[ -n "$(git status --porcelain)" ]]; then
     echo "Error: working tree is dirty. Commit or stash first." >&2
@@ -62,6 +81,7 @@ echo "────────────────────────�
 echo " Release plan"
 echo "   version : $CURRENT_VERSION  →  $VERSION   (build $CURRENT_BUILD → $NEW_BUILD)"
 echo "   merge   : $RELEASE_BRANCH  →  main"
+echo "   notarize: ${NOTARIZE:+yes (profile: $NOTARY_PROFILE)}${NOTARIZE:-no}"
 echo "   publish : release v$VERSION on $REPO ${DRAFT:+(draft)}${DRY_RUN:+  [DRY RUN — no push/publish]}"
 echo "──────────────────────────────────────────────"
 read -r -p "Proceed? [y/N] " reply
@@ -86,6 +106,20 @@ git commit -m "Release v$VERSION"
 
 DMG="dist/Sweep-${VERSION}.dmg"
 ZIP="dist/Sweep-${VERSION}.zip"
+
+# ---- notarize (optional) ------------------------------------------------
+# One submission notarizes the DMG *and* the app inside it; we then staple the
+# ticket to both the DMG (for sharing) and the .app (so the updater's zipped copy
+# validates offline too). Runs before the zip is built so ZIP_SHA covers the
+# stapled bundle.
+if [[ -n "$NOTARIZE" ]]; then
+    echo "Submitting $DMG to Apple notary service (can take a few minutes)…"
+    xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
+    xcrun stapler staple "$DMG"
+    xcrun stapler staple build/Release/Sweep.app
+    echo "✓ Notarized + stapled $DMG and Sweep.app"
+fi
+
 rm -f "$ZIP"
 ditto -c -k --sequesterRsrc --keepParent build/Release/Sweep.app "$ZIP"
 ZIP_SHA=$(shasum -a 256 "$ZIP" | awk '{print $1}')

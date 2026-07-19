@@ -23,11 +23,12 @@ OUT="build/Release/Sweep.app"
 # the outer signature covers them. A stable Team-signed identity is what lets the
 # updater's Keychain "Always Allow" persist across self-updates — ad-hoc changes
 # cdhash every build and re-prompts. --timestamp adds a secure timestamp (needs
-# network); notarization (Scripts/notarize.sh) additionally applies --options runtime.
+# network); --options runtime enables the Hardened Runtime, required for
+# notarization (Scripts/release.sh --notarize) and harmless otherwise.
 IDENTITY="Developer ID Application"
-codesign --force --timestamp --sign "$IDENTITY" "$OUT/Contents/MacOS/SweepHelper"
-codesign --force --timestamp --sign "$IDENTITY" "$OUT/Contents/Frameworks/SweepCore.framework"
-codesign --force --timestamp --entitlements App/Sweep.entitlements --sign "$IDENTITY" "$OUT"
+codesign --force --timestamp --options runtime --sign "$IDENTITY" "$OUT/Contents/MacOS/SweepHelper"
+codesign --force --timestamp --options runtime --sign "$IDENTITY" "$OUT/Contents/Frameworks/SweepCore.framework"
+codesign --force --timestamp --options runtime --entitlements App/Sweep.entitlements --sign "$IDENTITY" "$OUT"
 
 echo
 echo "✓ Built build/Release/Sweep.app"

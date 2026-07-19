@@ -38,6 +38,6 @@ create-dmg \
 echo
 echo "✓ Created $DMG"
 echo "  Install: open the DMG and drag Sweep into Applications."
-echo "  Note: ad-hoc signed. If you share this DMG, recipients bypass"
-echo "  Gatekeeper once via right-click → Open. For a warning-free DMG,"
-echo "  see Scripts/notarize.sh (requires an Apple Developer ID)."
+echo "  Signed with Developer ID. Unless this DMG was notarized"
+echo "  (Scripts/release.sh --notarize), recipients bypass Gatekeeper"
+echo "  once via right-click → Open."
