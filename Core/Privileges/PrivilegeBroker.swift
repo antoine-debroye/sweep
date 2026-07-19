@@ -134,7 +134,12 @@ public final class PrivilegeBroker {
             DispatchQueue.global().asyncAfter(deadline: .now() + 120) {
                 if resumed.claim() { continuation.resume(throwing: BrokerError.timedOut) }
             }
-            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
+            // @Sendable is required: NSXPC invokes this handler on its own
+            // private connection queue, not the main actor. Without it the
+            // closure inherits @MainActor isolation from this method and the
+            // Swift 6 runtime traps (dispatch_assert_queue) when it runs off
+            // the main thread — e.g. when the helper replies with an error.
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ @Sendable error in
                 if resumed.claim() { continuation.resume(throwing: error) }
             }) as? SweepHelperProtocol else {
                 if resumed.claim() { continuation.resume(throwing: BrokerError.helperUnreachable) }
