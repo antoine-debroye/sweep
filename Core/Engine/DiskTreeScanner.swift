@@ -64,34 +64,50 @@ public enum DiskTreeScanner {
     /// Materialized cloud data below this is treated as noise, not worth flagging.
     static let offloadFloor: Int64 = 1_000_000  // 1 MB
 
-    /// Lists the direct children of `url`, sizing folders fully (recursively, in
-    /// parallel) and files by their allocated + logical bytes, classifying each,
-    /// sorted largest-first. Lazy: one level per call, so drilling is snappy.
-    public static func children(of url: URL, policy: SafetyPolicy) async -> [DiskNode] {
-        let fm = FileManager()
-        let keys: Set<URLResourceKey> = [
-            .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
-            .totalFileAllocatedSizeKey, .fileAllocatedSizeKey,
-            .totalFileSizeKey, .fileSizeKey,
-            .contentModificationDateKey, .isUbiquitousItemKey,
-        ]
-        guard let entries = try? fm.contentsOfDirectory(
-            at: url,
-            includingPropertiesForKeys: Array(keys),
-            options: []   // include hidden — dotfolders (.ollama, .cache…) can be huge
-        ) else { return [] }
+    /// Streams the direct children of `url` as each one is sized and classified, so
+    /// the UI can show rows and running totals incrementally instead of waiting for
+    /// the whole level. Folders are sized fully (recursively, in parallel), files by
+    /// their allocated + logical bytes. Mirrors the AsyncStream + detached-producer
+    /// pattern used by `ScanEngine.scan` / `LargeFileScanner.scan`, so the producer
+    /// never inherits `@MainActor` isolation.
+    public static func stream(of url: URL, policy: SafetyPolicy) -> AsyncStream<DiskNode> {
+        AsyncStream { continuation in
+            let task = Task.detached(priority: .userInitiated) {
+                let fm = FileManager()
+                let keys: Set<URLResourceKey> = [
+                    .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
+                    .totalFileAllocatedSizeKey, .fileAllocatedSizeKey,
+                    .totalFileSizeKey, .fileSizeKey,
+                    .contentModificationDateKey, .isUbiquitousItemKey,
+                ]
+                guard let entries = try? fm.contentsOfDirectory(
+                    at: url,
+                    includingPropertiesForKeys: Array(keys),
+                    options: []   // include hidden — dotfolders (.ollama, .cache…) can be huge
+                ) else { continuation.finish(); return }
 
-        return await withTaskGroup(of: DiskNode?.self) { group in
-            for entry in entries {
-                group.addTask { node(for: entry, keys: keys, policy: policy) }
+                await withTaskGroup(of: DiskNode?.self) { group in
+                    for entry in entries {
+                        group.addTask { node(for: entry, keys: keys, policy: policy) }
+                    }
+                    for await maybe in group {
+                        if Task.isCancelled { break }
+                        if let node = maybe { continuation.yield(node) }
+                    }
+                }
+                continuation.finish()
             }
-            var nodes: [DiskNode] = []
-            for await maybe in group {
-                if let node = maybe { nodes.append(node) }
-            }
-            nodes.sort { $0.allocatedSize > $1.allocatedSize }
-            return nodes
+            continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    /// Collects `stream` into a fully-sized, largest-first array. Preserves the
+    /// original one-shot API + sort contract for non-streaming callers and tests.
+    public static func children(of url: URL, policy: SafetyPolicy) async -> [DiskNode] {
+        var nodes: [DiskNode] = []
+        for await node in stream(of: url, policy: policy) { nodes.append(node) }
+        nodes.sort { $0.allocatedSize > $1.allocatedSize }
+        return nodes
     }
 
     private static func node(for url: URL, keys: Set<URLResourceKey>, policy: SafetyPolicy) -> DiskNode? {

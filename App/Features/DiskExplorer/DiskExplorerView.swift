@@ -35,6 +35,8 @@ final class DiskExplorerModel {
     var selection: Set<String> = []
 
     private var scanTask: Task<Void, Never>?
+    /// Recently-measured levels, keyed by path, so back/forward navigation is instant.
+    private var levelCache = DiskLevelCache()
 
     var currentURL: URL { path.last ?? root }
     var breadcrumb: [URL] { [root] + path }
@@ -47,16 +49,32 @@ final class DiskExplorerModel {
 
     func open(_ url: URL, model: AppModel) {
         scanTask?.cancel()
-        loading = true
-        children = []
         selection = []
         statusMessage = nil
+
+        // Instant path: serve a recently-measured level from cache, no spinner.
+        if let cached = levelCache.lookup(path: url.path, now: Date()) {
+            children = cached
+            loading = false
+            return
+        }
+
+        loading = true
+        children = []
         let policy = model.policy
         scanTask = Task {
-            let nodes = await DiskTreeScanner.children(of: url, policy: policy)
-            guard !Task.isCancelled else { return }
-            self.children = nodes
+            var collected: [DiskNode] = []
+            for await node in DiskTreeScanner.stream(of: url, policy: policy) {
+                // A newer open() cancelled us — stop appending to a stale level.
+                if Task.isCancelled { return }
+                collected.append(node)
+                withAnimation(.easeOut(duration: 0.18)) {
+                    self.children.append(node)   // @Observable → live, incremental UI
+                }
+            }
+            if Task.isCancelled { return }
             self.loading = false
+            self.levelCache.store(path: url.path, nodes: collected, now: Date())
         }
     }
 
@@ -81,7 +99,11 @@ final class DiskExplorerModel {
         open(url, model: model)
     }
 
-    func rescan(model: AppModel) { open(currentURL, model: model) }
+    func rescan(model: AppModel) {
+        // A rescan means "don't trust cached data here" — drop this subtree first.
+        levelCache.invalidate(pathsWithPrefix: currentURL.path)
+        open(currentURL, model: model)
+    }
 
     func cancel() { scanTask?.cancel(); loading = false }
 
@@ -159,6 +181,9 @@ final class DiskExplorerModel {
             model.refreshDisk()
             let removed = Set(session.items.map(\.originalPath))
             self.children.removeAll { removed.contains($0.url.path) }
+            // Trashed bytes counted into this level and every ancestor's total, so
+            // drop those cached levels; sibling subtrees stay warm.
+            for u in self.breadcrumb { self.levelCache.invalidate(path: u.path) }
             self.selection = []
             self.statusMessage = "Moved \(session.totalFreed.sweepBytes) to Trash."
         }
