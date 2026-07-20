@@ -26,7 +26,15 @@ OUT="build/Release/Sweep.app"
 # network); --options runtime enables the Hardened Runtime, required for
 # notarization (Scripts/release.sh --notarize) and harmless otherwise.
 IDENTITY="Developer ID Application"
-codesign --force --timestamp --options runtime --sign "$IDENTITY" "$OUT/Contents/MacOS/SweepHelper"
+# --identifier is REQUIRED for the helper: it is a bare Mach-O with no Info.plist,
+# so codesign would otherwise derive the identifier from the filename
+# ("SweepHelper"). SMAppService requires the daemon's signing identifier to match
+# its LaunchDaemon Label (com.debroye.sweep.helper) — a mismatch makes macOS
+# SIGKILL it at launch with a Launch Constraint Violation, and launchd then
+# respawns it in a loop.
+codesign --force --timestamp --options runtime \
+    --identifier com.debroye.sweep.helper \
+    --sign "$IDENTITY" "$OUT/Contents/MacOS/SweepHelper"
 codesign --force --timestamp --options runtime --sign "$IDENTITY" "$OUT/Contents/Frameworks/SweepCore.framework"
 codesign --force --timestamp --options runtime --entitlements App/Sweep.entitlements --sign "$IDENTITY" "$OUT"
 

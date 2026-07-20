@@ -19,7 +19,11 @@ DMG="dist/Sweep-${VERSION}.dmg"
 [ -d "$APP" ] || ./Scripts/build.sh
 
 # Hardened runtime is required for notarization.
+# --identifier is required: a bare Mach-O would otherwise be signed as
+# "SweepHelper", which must match the LaunchDaemon Label or SMAppService
+# refuses to launch it (Launch Constraint Violation).
 codesign --force --options runtime --timestamp \
+    --identifier com.debroye.sweep.helper \
     --sign "$IDENTITY" "$APP/Contents/MacOS/SweepHelper"
 codesign --force --options runtime --timestamp \
     --sign "$IDENTITY" "$APP/Contents/Frameworks/SweepCore.framework"
