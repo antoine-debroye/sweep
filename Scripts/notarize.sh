@@ -1,40 +1,33 @@
 #!/bin/bash
-# Signs and notarizes Sweep for warning-free distribution.
-# Requires a paid Apple Developer account. One-time setup:
-#   1. Create a "Developer ID Application" certificate in your Apple Developer
-#      account and install it in your login Keychain.
-#   2. Store notary credentials once:
-#        xcrun notarytool store-credentials sweep-notary \
-#          --apple-id you@example.com --team-id TEAMID --password app-specific-pw
-#   3. Run: TEAM_ID=TEAMID ./Scripts/notarize.sh
+# Builds, packages, notarizes and staples a DMG **without cutting a release** —
+# no version bump, no tag, no push, no GitHub release. Use this for a one-off
+# warning-free DMG you want to hand to someone.
+#
+#   Scripts/notarize.sh
+#
+# To cut an actual release, use:  Scripts/release.sh <version> --notarize
+#
+# Signing is NOT duplicated here: Scripts/build.sh is the single source of truth
+# (Developer ID identity, hardened runtime, and the helper's --identifier, which
+# must match its LaunchDaemon Label or SMAppService refuses to launch it).
+# The notary step lives in Scripts/notarize-artifacts.sh, shared with release.sh.
+#
+# One-time setup: store the notary credentials (app-specific password from
+# appleid.apple.com):
+#   xcrun notarytool store-credentials sweep-notary \
+#     --apple-id you@example.com --team-id FC27NYGHX4 --password app-specific-pw
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-: "${TEAM_ID:?Set TEAM_ID to your 10-character Apple Developer Team ID}"
-IDENTITY="Developer ID Application"
+./Scripts/build.sh
+
 VERSION=$(grep -m1 'MARKETING_VERSION' project.yml | awk -F'"' '{print $2}')
-APP="build/Release/Sweep.app"
 DMG="dist/Sweep-${VERSION}.dmg"
-
-[ -d "$APP" ] || ./Scripts/build.sh
-
-# Hardened runtime is required for notarization.
-# --identifier is required: a bare Mach-O would otherwise be signed as
-# "SweepHelper", which must match the LaunchDaemon Label or SMAppService
-# refuses to launch it (Launch Constraint Violation).
-codesign --force --options runtime --timestamp \
-    --identifier com.debroye.sweep.helper \
-    --sign "$IDENTITY" "$APP/Contents/MacOS/SweepHelper"
-codesign --force --options runtime --timestamp \
-    --sign "$IDENTITY" "$APP/Contents/Frameworks/SweepCore.framework"
-codesign --force --options runtime --timestamp \
-    --entitlements App/Sweep.entitlements \
-    --sign "$IDENTITY" "$APP"
 
 rm -f "$DMG"
 ./Scripts/make-dmg.sh
 
-xcrun notarytool submit "$DMG" --keychain-profile sweep-notary --wait
-xcrun stapler staple "$DMG"
+./Scripts/notarize-artifacts.sh "$DMG" build/Release/Sweep.app
 
-echo "✓ Notarized $DMG — distributable without Gatekeeper warnings."
+echo
+echo "✓ $DMG is notarized — distributable without Gatekeeper warnings."

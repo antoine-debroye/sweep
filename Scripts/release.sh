@@ -108,16 +108,10 @@ DMG="dist/Sweep-${VERSION}.dmg"
 ZIP="dist/Sweep-${VERSION}.zip"
 
 # ---- notarize (optional) ------------------------------------------------
-# One submission notarizes the DMG *and* the app inside it; we then staple the
-# ticket to both the DMG (for sharing) and the .app (so the updater's zipped copy
-# validates offline too). Runs before the zip is built so ZIP_SHA covers the
-# stapled bundle.
+# Shared with Scripts/notarize.sh so the notary step can't drift. Runs before the
+# zip is built so the stapled .app is what gets zipped and ZIP_SHA covers it.
 if [[ -n "$NOTARIZE" ]]; then
-    echo "Submitting $DMG to Apple notary service (can take a few minutes)…"
-    xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
-    xcrun stapler staple "$DMG"
-    xcrun stapler staple build/Release/Sweep.app
-    echo "✓ Notarized + stapled $DMG and Sweep.app"
+    ./Scripts/notarize-artifacts.sh "$DMG" build/Release/Sweep.app "$NOTARY_PROFILE"
 fi
 
 rm -f "$ZIP"

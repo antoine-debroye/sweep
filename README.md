@@ -63,10 +63,18 @@ Sweep walks you through these on first launch — all optional, all revocable:
 
 ## Signing
 
-The default build is **ad-hoc signed**: perfect on your own Mac. If you share
-the DMG, recipients right-click → Open once. With an Apple Developer ID, run
-`TEAM_ID=XXXXXXXXXX ./Scripts/notarize.sh` for a fully notarized,
-warning-free DMG.
+Release builds are **Developer ID signed** with the hardened runtime, and are
+**notarized**, so the DMG installs without Gatekeeper warnings. Debug/test
+builds stay ad-hoc (faster, offline-safe).
+
+- Cut a release: `Scripts/release.sh <version> --notarize`
+- One-off DMG (no bump/tag/publish): `Scripts/notarize.sh`
+
+Signing lives only in `Scripts/build.sh`, and the notary step only in
+`Scripts/notarize-artifacts.sh` — the other scripts delegate, so the two can't
+drift. The helper must be signed with `--identifier com.debroye.sweep.helper`
+so it matches its LaunchDaemon `Label`; otherwise SMAppService kills it at
+launch with a constraint violation.
 
 ## Layout
 
@@ -76,5 +84,6 @@ Core/       SweepCore.framework — rules, scanner, cleaner, safety, stats
 Helper/     privileged XPC daemon (SMAppService)
 Shared/     XPC protocol + privileged path policy (compiled into both sides)
 Tests/      safety + engine tests on fixture trees
-Scripts/    build.sh · make-dmg.sh · notarize.sh · icon & artwork generators
+Scripts/    build.sh · make-dmg.sh · release.sh · notarize.sh ·
+            notarize-artifacts.sh · icon & artwork generators
 ```
