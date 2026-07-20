@@ -27,6 +27,10 @@ public final class PrivilegeBroker {
     public private(set) var helperState: HelperState = .notInstalled
     public private(set) var lastError: String?
 
+    /// Guards `repairHelperOnce()` so a broken helper is re-registered at most
+    /// once per app session.
+    private var didAttemptHelperRepair = false
+
     private var daemonService: SMAppService {
         SMAppService.daemon(plistName: SweepHelperConstants.daemonPlistName)
     }
@@ -70,13 +74,48 @@ public final class PrivilegeBroker {
 
     // MARK: - Operations
 
+    /// Runs `body` through the privileged helper, or returns nil if the helper
+    /// can't serve it (caller then falls back to the osascript admin prompt).
+    ///
+    /// launchd keeps a helper process alive across app updates — its `runs`
+    /// count never increments — so a self-update leaves the *old* helper binary
+    /// serving the mach endpoint. If a call fails we therefore re-register the
+    /// daemon once per session, which makes launchd exec the current binary,
+    /// then retry before giving up.
+    private func viaHelper(
+        _ body: @escaping @Sendable (SweepHelperProtocol, @escaping @Sendable (Int32, String) -> Void) -> Void
+    ) async -> String? {
+        guard helperState == .enabled else { return nil }
+        do {
+            return try await xpcCall(body)
+        } catch {
+            NSLog("Sweep: privileged helper call failed (\(error.localizedDescription))")
+        }
+        guard repairHelperOnce() else { return nil }
+        return try? await xpcCall(body)
+    }
+
+    /// Re-registers the daemon so launchd reloads the current helper binary.
+    /// At most once per session, so a genuinely broken helper can't loop.
+    private func repairHelperOnce() -> Bool {
+        guard !didAttemptHelperRepair else { return false }
+        didAttemptHelperRepair = true
+        NSLog("Sweep: re-registering the privileged helper (stale daemon suspected)")
+        do {
+            try? daemonService.unregister()
+            try daemonService.register()
+        } catch {
+            lastError = error.localizedDescription
+            refreshHelperState()
+            return false
+        }
+        refreshHelperState()
+        return helperState == .enabled
+    }
+
     public func purgeMemory() async throws -> String {
-        if helperState == .enabled {
-            do {
-                return try await xpcCall { helper, done in helper.purgeMemory(reply: done) }
-            } catch {
-                // Helper broken → fall through to the admin prompt.
-            }
+        if let output = await viaHelper({ helper, done in helper.purgeMemory(reply: done) }) {
+            return output
         }
         return try await Self.runAsAdmin(
             command: "/usr/sbin/purge",
@@ -87,10 +126,8 @@ public final class PrivilegeBroker {
     public func removeSystemPaths(_ paths: [String]) async throws -> String {
         let valid = paths.filter { PrivilegedPathPolicy.isAllowed($0) }
         guard !valid.isEmpty else { throw BrokerError.nothingToDo }
-        if helperState == .enabled {
-            do {
-                return try await xpcCall { helper, done in helper.removePaths(valid, reply: done) }
-            } catch {}
+        if let output = await viaHelper({ helper, done in helper.removePaths(valid, reply: done) }) {
+            return output
         }
         let quoted = valid.map { Self.shellQuote($0) }.joined(separator: " ")
         return try await Self.runAsAdmin(
@@ -100,10 +137,8 @@ public final class PrivilegeBroker {
     }
 
     public func runMaintenance(_ task: MaintenanceTask) async throws -> String {
-        if helperState == .enabled {
-            do {
-                return try await xpcCall { helper, done in helper.runMaintenance(task.rawValue, reply: done) }
-            } catch {}
+        if let output = await viaHelper({ helper, done in helper.runMaintenance(task.rawValue, reply: done) }) {
+            return output
         }
         let cmd = task.commandLine
         var command = ([cmd.path] + cmd.args).map { Self.shellQuote($0) }.joined(separator: " ")

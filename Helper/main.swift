@@ -99,7 +99,10 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate {
     }
 
     private static func clientIsTrusted(_ connection: NSXPCConnection) -> Bool {
-        var token = connection.auditToken
+        guard var token = connection.auditToken else {
+            NSLog("Sweep helper: could not read the client's audit token — refusing connection")
+            return false
+        }
         let attributes = [kSecGuestAttributeAudit: Data(bytes: &token, count: MemoryLayout.size(ofValue: token))] as CFDictionary
         var code: SecCode?
         guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &code) == errSecSuccess, let code else {
@@ -120,11 +123,20 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate {
 }
 
 // NSXPCConnection.auditToken is not exposed publicly; bridge it via KVC.
+//
+// KVC boxes the C `audit_token_t` struct as an **NSValue** — not NSData. Casting
+// to the wrong class silently produced an all-zero token, which no code-signing
+// check can ever match, so the helper rejected *every* client and the app fell
+// back to the osascript password prompt forever. Return nil on any failure so
+// the caller fails closed loudly instead of silently trusting a zeroed token.
 private extension NSXPCConnection {
-    var auditToken: audit_token_t {
+    var auditToken: audit_token_t? {
+        guard let boxed = self.value(forKey: "auditToken") as? NSValue else { return nil }
         var token = audit_token_t()
-        if let value = self.value(forKey: "auditToken") as? NSData, value.length == MemoryLayout<audit_token_t>.size {
-            value.getBytes(&token, length: MemoryLayout<audit_token_t>.size)
+        let size = MemoryLayout<audit_token_t>.size
+        withUnsafeMutableBytes(of: &token) { raw in
+            guard let base = raw.baseAddress else { return }
+            boxed.getValue(base, size: size)
         }
         return token
     }
