@@ -122,9 +122,20 @@ public enum SimulatorScanner {
                 sizeBytes: r.sizeBytes ?? 0
             )
         }
-        .sorted { lhs, rhs in
-            if lhs.platform != rhs.platform { return lhs.platform < rhs.platform }
-            return compareVersion(lhs.version, rhs.version) == .orderedDescending
+        .sorted { isNewer($0, than: $1) }
+    }
+
+    /// Deterministic "newer" ordering: platform, then version, then build —
+    /// two disk images of the same version (a Ready one and its duplicate)
+    /// must always resolve the same way.
+    static func isNewer(_ lhs: SimulatorRuntime, than rhs: SimulatorRuntime) -> Bool {
+        if lhs.platform != rhs.platform { return lhs.platform < rhs.platform }
+        switch compareVersion(lhs.version, rhs.version) {
+        case .orderedDescending: return true
+        case .orderedAscending: return false
+        case .orderedSame:
+            if lhs.build != rhs.build { return lhs.build.localizedStandardCompare(rhs.build) == .orderedDescending }
+            return lhs.id < rhs.id
         }
     }
 
@@ -154,7 +165,7 @@ public enum SimulatorScanner {
     /// share a runtime identifier), marks the newest Ready runtime per
     /// platform, and collects devices whose runtime is gone.
     public static func assemble(runtimes: [SimulatorRuntime], devices: [SimulatorDevice]) -> SimulatorInventory {
-        var runtimes = runtimes
+        var runtimes = runtimes.sorted { isNewer($0, than: $1) }
         var unavailable: [SimulatorDevice] = []
 
         for device in devices {
@@ -168,7 +179,8 @@ public enum SimulatorScanner {
 
         for platform in Set(runtimes.map(\.platform)) {
             let ready = runtimes.indices.filter { runtimes[$0].platform == platform && runtimes[$0].isReady }
-            guard let newest = ready.max(by: { compareVersion(runtimes[$0].version, runtimes[$1].version) == .orderedAscending }) else { continue }
+            // Sorted newest-first above, so the first Ready one is the newest.
+            guard let newest = ready.first else { continue }
             runtimes[newest].isNewestForPlatform = true
         }
         return SimulatorInventory(runtimes: runtimes, unavailableDevices: unavailable)
