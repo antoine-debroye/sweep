@@ -27,8 +27,31 @@ public struct SimulatorRuntime: Sendable, Identifiable, Equatable {
     public let state: String         // "Ready", "Unusable - …"
     public let deletable: Bool
     public let sizeBytes: Int64
+    /// Root of the on-disk asset this image lives in (a MobileAsset `.asset`
+    /// folder or a Cryptex `SimRuntimeBundle-…`). A "Patchable" image is a
+    /// patch layered on top of a base image in the SAME asset, so deleting
+    /// either image removes the whole asset — and the other image with it.
+    public let assetRoot: String?
+    public let parentIdentifier: String?
     public var devices: [SimulatorDevice] = []
     public var isNewestForPlatform = false
+    /// Other runtimes that share this image's asset (see `assetRoot`). They
+    /// can only be removed together.
+    public var linkedRuntimeIDs: Set<String> = []
+
+    public init(id: String, runtimeIdentifier: String, platform: String, version: String, build: String,
+                state: String, deletable: Bool, sizeBytes: Int64, assetRoot: String? = nil, parentIdentifier: String? = nil) {
+        self.id = id
+        self.runtimeIdentifier = runtimeIdentifier
+        self.platform = platform
+        self.version = version
+        self.build = build
+        self.state = state
+        self.deletable = deletable
+        self.sizeBytes = sizeBytes
+        self.assetRoot = assetRoot
+        self.parentIdentifier = parentIdentifier
+    }
 
     public var isReady: Bool { state == "Ready" }
     public var displayName: String { "\(platform) \(version) (\(build))" }
@@ -91,6 +114,10 @@ public enum SimulatorScanner {
         let state: String
         let deletable: Bool?
         let sizeBytes: Int64?
+        let path: String?
+        let parentIdentifier: String?
+        let parentImagePath: String?
+        let parentMountPath: String?
     }
 
     private struct DeviceJSON: Decodable {
@@ -119,10 +146,24 @@ public enum SimulatorScanner {
                 build: r.build,
                 state: r.state,
                 deletable: r.deletable ?? true,
-                sizeBytes: r.sizeBytes ?? 0
+                sizeBytes: r.sizeBytes ?? 0,
+                assetRoot: assetRoot(for: [r.path, r.parentImagePath, r.parentMountPath]),
+                parentIdentifier: r.parentIdentifier
             )
         }
         .sorted { isNewer($0, than: $1) }
+    }
+
+    /// The shared on-disk unit an image belongs to: the enclosing
+    /// `….asset` folder, or a Cryptex `SimRuntimeBundle-…` folder.
+    static func assetRoot(for paths: [String?]) -> String? {
+        for path in paths.compactMap({ $0 }) where !path.isEmpty {
+            let components = path.split(separator: "/", omittingEmptySubsequences: false)
+            if let index = components.firstIndex(where: { $0.hasSuffix(".asset") || $0.hasPrefix("SimRuntimeBundle-") }) {
+                return components[...index].joined(separator: "/")
+            }
+        }
+        return nil
     }
 
     /// Deterministic "newer" ordering: platform, then version, then build —
@@ -177,6 +218,16 @@ public enum SimulatorScanner {
             runtimes[index].devices.append(device)
         }
 
+        // Images that share an asset (or name another image as parent) are one
+        // deletion unit.
+        for i in runtimes.indices {
+            for j in runtimes.indices where i != j {
+                let sameAsset = runtimes[i].assetRoot != nil && runtimes[i].assetRoot == runtimes[j].assetRoot
+                let parentLink = runtimes[i].parentIdentifier == runtimes[j].id || runtimes[j].parentIdentifier == runtimes[i].id
+                if sameAsset || parentLink { runtimes[i].linkedRuntimeIDs.insert(runtimes[j].id) }
+            }
+        }
+
         for platform in Set(runtimes.map(\.platform)) {
             let ready = runtimes.indices.filter { runtimes[$0].platform == platform && runtimes[$0].isReady }
             // Sorted newest-first above, so the first Ready one is the newest.
@@ -206,6 +257,18 @@ public enum SimulatorScanner {
             let lastBooted = runtime.lastBooted ?? .distantPast
             if lastBooted < cutoff { suggestion.runtimeIDs.insert(runtime.id) }
         }
+        // An image that shares its asset with a runtime we keep cannot go —
+        // removing it would take the kept runtime with it.
+        var pruned = true
+        while pruned {
+            pruned = false
+            for runtime in inventory.runtimes where suggestion.runtimeIDs.contains(runtime.id) {
+                if !runtime.linkedRuntimeIDs.isSubset(of: suggestion.runtimeIDs) {
+                    suggestion.runtimeIDs.remove(runtime.id)
+                    pruned = true
+                }
+            }
+        }
 
         for runtime in inventory.runtimes where !suggestion.runtimeIDs.contains(runtime.id) {
             for device in runtime.devices where device.isAvailable && device.state != "Booted" {
@@ -232,10 +295,35 @@ public enum SimulatorScanner {
         }
     }
 
-    /// Deletes devices first (so the sizes are attributable), then runtimes,
-    /// then sweeps devices left unavailable by the runtime removals.
+    /// Selected devices that must be deleted explicitly: a device only goes
+    /// away with its runtime when EVERY image carrying that runtime
+    /// identifier is being removed.
+    public static func devicesToDeleteExplicitly(
+        selectedDevices: [SimulatorDevice],
+        removingRuntimes: [SimulatorRuntime],
+        inventory: SimulatorInventory
+    ) -> [SimulatorDevice] {
+        let removingIDs = Set(removingRuntimes.map(\.id))
+        return selectedDevices.filter { device in
+            let images = inventory.runtimes.filter { $0.runtimeIdentifier == device.runtimeIdentifier }
+            let allImagesRemoved = !images.isEmpty && images.allSatisfy { removingIDs.contains($0.id) }
+            return !allImagesRemoved
+        }
+    }
+
+    /// Deletes devices first (so the sizes are attributable), then runtimes.
+    /// A runtime whose linked images are not all in the batch is refused —
+    /// deleting it would silently remove the others. Devices left
+    /// unavailable are NOT swept here: a runtime that is merely missing
+    /// (re-downloadable) must not cost the user their device data.
     public static func remove(runtimes: [SimulatorRuntime], devices: [SimulatorDevice]) async -> RemovalResult {
         var result = RemovalResult()
+        let batch = Set(runtimes.map(\.id))
+        var runtimes = runtimes
+        for runtime in runtimes where !runtime.linkedRuntimeIDs.isSubset(of: batch) {
+            result.errors.append("\(runtime.displayName) shares its disk image with another installed runtime; remove them together.")
+        }
+        runtimes.removeAll { !$0.linkedRuntimeIDs.isSubset(of: batch) }
         for device in devices {
             let r = await ProcessRunner.run(xcrun, ["simctl", "delete", device.id])
             if r.status == 0 {
@@ -251,9 +339,6 @@ public enum SimulatorScanner {
             } else {
                 result.errors.append("\(runtime.displayName): \(r.stderr.isEmpty ? r.stdout : r.stderr)")
             }
-        }
-        if !result.removedRuntimes.isEmpty {
-            _ = await ProcessRunner.run(xcrun, ["simctl", "delete", "unavailable"])
         }
         return result
     }

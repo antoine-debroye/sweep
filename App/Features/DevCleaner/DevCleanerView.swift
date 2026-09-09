@@ -91,16 +91,22 @@ final class DevCleanerModel {
         simulatorSelection = suggestion.runtimeIDs.union(suggestion.deviceIDs)
     }
 
+    /// Runtimes that share a disk image select and deselect as one unit.
     func toggleSimulator(_ id: String) {
-        if simulatorSelection.contains(id) { simulatorSelection.remove(id) } else { simulatorSelection.insert(id) }
+        var unit: Set<String> = [id]
+        if let runtime = simulators.runtimes.first(where: { $0.id == id }) {
+            unit.formUnion(runtime.linkedRuntimeIDs)
+        }
+        if simulatorSelection.contains(id) { simulatorSelection.subtract(unit) } else { simulatorSelection.formUnion(unit) }
     }
 
     /// Permanent: simctl has no Trash. Devices on a runtime being removed are
     /// deleted with it, so they are not sent separately.
     func removeSelectedSimulators(model: AppModel) {
         let runtimes = selectedRuntimes
-        let runtimeIDs = Set(runtimes.map(\.runtimeIdentifier))
-        let devices = selectedDevices.filter { !runtimeIDs.contains($0.runtimeIdentifier) }
+        let devices = SimulatorScanner.devicesToDeleteExplicitly(
+            selectedDevices: selectedDevices, removingRuntimes: runtimes, inventory: simulators
+        )
         guard !runtimes.isEmpty || !devices.isEmpty, !simulatorBusy else { return }
         simulatorBusy = true
         simulatorStatus = nil
@@ -398,6 +404,9 @@ struct DevCleanerView: View {
                         StatusPill(text: "unusable", color: Theme.amber)
                     } else if runtime.isNewestForPlatform {
                         StatusPill(text: "newest \(runtime.platform)", color: Theme.mint)
+                    }
+                    if let linked = dev.simulators.runtimes.first(where: { runtime.linkedRuntimeIDs.contains($0.id) }) {
+                        StatusPill(text: "shares image with \(linked.displayName)", color: Theme.amber)
                     }
                     ByteText(bytes: runtime.sizeBytes + runtime.devicesSize, font: .system(size: 11.5, weight: .semibold, design: .rounded))
                         .frame(width: 70, alignment: .trailing)

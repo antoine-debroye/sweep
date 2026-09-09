@@ -102,6 +102,58 @@ final class SimulatorScannerTests: XCTestCase {
         }
     }
 
+    func testImagesSharingAnAssetAreOneUnit() throws {
+        // The real 2026-09-09 incident: iOS 26.5 build 23F73 was the base
+        // image inside a MobileAsset and 23F77 a patch on top of it. 23F73
+        // had no devices and was suggested; deleting it removed 23F77 too.
+        let asset = "/System/Library/AssetsV2/com_apple_MobileAsset_iOSSimulatorRuntime/abc123.asset/AssetData"
+        let json = """
+        {
+          "BASE-73": {"build":"23F73","identifier":"BASE-73","platformIdentifier":"com.apple.platform.iphonesimulator","runtimeIdentifier":"com.apple.CoreSimulator.SimRuntime.iOS-26-5","sizeBytes":8000000000,"state":"Ready","version":"26.5","kind":"Cryptex Disk Image","path":"\(asset)/Restore/1.dmg"},
+          "PATCH-77": {"build":"23F77","identifier":"PATCH-77","platformIdentifier":"com.apple.platform.iphonesimulator","runtimeIdentifier":"com.apple.CoreSimulator.SimRuntime.iOS-26-5","sizeBytes":8000000000,"state":"Ready","version":"26.5","kind":"Patchable Cryptex Disk Image","path":"/Library/Developer/CoreSimulator/Cryptex/Images/patched/2.dmg","parentImagePath":"\(asset)/Restore/1.dmg","parentMountPath":"\(asset)"},
+          "OLD-18": {"build":"22E238","identifier":"OLD-18","platformIdentifier":"com.apple.platform.iphonesimulator","runtimeIdentifier":"com.apple.CoreSimulator.SimRuntime.iOS-18-4","sizeBytes":7000000000,"state":"Ready","version":"18.4","kind":"Cryptex Disk Image","path":"/Library/Developer/CoreSimulator/Cryptex/Images/bundle/SimRuntimeBundle-XYZ/Restore/3.dmg","parentIdentifier":"XYZ"}
+        }
+        """
+        let devices = #"{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-26-5":[{"udid":"D1","name":"iPhone 17 Pro","state":"Shutdown","isAvailable":true,"dataPathSize":4000000000,"lastBootedAt":"2026-09-08T00:00:00Z"}]}}"#
+        let inv = SimulatorScanner.assemble(
+            runtimes: try SimulatorScanner.parseRuntimes(Data(json.utf8)),
+            devices: try SimulatorScanner.parseDevices(Data(devices.utf8))
+        )
+        let base = try XCTUnwrap(inv.runtimes.first { $0.id == "BASE-73" })
+        let patch = try XCTUnwrap(inv.runtimes.first { $0.id == "PATCH-77" })
+        XCTAssertEqual(base.assetRoot, patch.assetRoot)
+        XCTAssertEqual(base.linkedRuntimeIDs, ["PATCH-77"])
+        XCTAssertEqual(patch.linkedRuntimeIDs, ["BASE-73"])
+        XCTAssertTrue(patch.isNewestForPlatform)
+        XCTAssertTrue(try XCTUnwrap(inv.runtimes.first { $0.id == "OLD-18" }).linkedRuntimeIDs.isEmpty)
+
+        let s = SimulatorScanner.suggest(inv, staleDays: 60, now: Date(timeIntervalSince1970: 1_788_998_400))
+        XCTAssertFalse(s.runtimeIDs.contains("BASE-73"), "the base image of a kept runtime must never be suggested")
+        XCTAssertFalse(s.runtimeIDs.contains("PATCH-77"))
+        XCTAssertTrue(s.runtimeIDs.contains("OLD-18"))
+    }
+
+    func testPartialUnitRemovalIsRefusedAndDevicesPartitioned() async throws {
+        var base = SimulatorRuntime(id: "BASE", runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-5", platform: "iOS",
+                                    version: "26.5", build: "23F73", state: "Ready", deletable: true, sizeBytes: 1, assetRoot: "/a.asset")
+        var patch = SimulatorRuntime(id: "PATCH", runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-5", platform: "iOS",
+                                     version: "26.5", build: "23F77", state: "Ready", deletable: true, sizeBytes: 1, assetRoot: "/a.asset")
+        base.linkedRuntimeIDs = ["PATCH"]; patch.linkedRuntimeIDs = ["BASE"]
+        let device = SimulatorDevice(id: "D1", name: "iPhone", runtimeIdentifier: patch.runtimeIdentifier, state: "Shutdown",
+                                     isAvailable: true, dataPath: "/d", dataPathSize: 10, logPathSize: 0, lastBootedAt: nil)
+        let inv = SimulatorInventory(runtimes: [patch, base])
+
+        // Removing only the base is refused before any simctl call.
+        let result = await SimulatorScanner.remove(runtimes: [base], devices: [])
+        XCTAssertTrue(result.removedRuntimes.isEmpty)
+        XCTAssertEqual(result.errors.count, 1)
+        XCTAssertTrue(result.errors[0].contains("shares its disk image"))
+
+        // A selected device is only implied when EVERY image of its runtime goes.
+        XCTAssertEqual(SimulatorScanner.devicesToDeleteExplicitly(selectedDevices: [device], removingRuntimes: [base], inventory: inv).map(\.id), ["D1"])
+        XCTAssertTrue(SimulatorScanner.devicesToDeleteExplicitly(selectedDevices: [device], removingRuntimes: [base, patch], inventory: inv).isEmpty)
+    }
+
     func testVersionAndLabelHelpers() {
         XCTAssertEqual(SimulatorScanner.compareVersion("26.5", "26.4.1"), .orderedDescending)
         XCTAssertEqual(SimulatorScanner.compareVersion("18.4", "26.0.1"), .orderedAscending)
