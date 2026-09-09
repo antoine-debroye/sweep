@@ -103,7 +103,10 @@ struct MenuBarView: View {
                         .foregroundStyle(.tertiary)
                 }
                 Spacer()
-                Button("Quit") { NSApp.terminate(nil) }
+                Button("Quit") {
+                    Lifecycle.terminating("menu bar Quit")
+                    NSApp.terminate(nil)
+                }
                     .buttonStyle(.plain)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
