@@ -212,9 +212,18 @@ final class EngineTests: XCTestCase {
         ], errors: [])
         await store.add(session)
 
+        // An OLDER session whose Trash file was emptied long ago, but whose
+        // path Finder has since reused for the newer item above: must not be
+        // counted twice (the real card once promised 5.95 GB and freed 2.85).
+        let stale = CleanSession(date: Date().addingTimeInterval(-30 * 86_400), source: .smartScan, items: [
+            CleanedItem(originalPath: "/orig/old/sweep-moved.bin", trashPath: trash.appending(path: "sweep-moved.bin").path,
+                        size: 7_000_000, displayName: "sweep-moved.bin", category: .systemJunk),
+        ], errors: [])
+        await store.add(stale)
+
         let held = await store.trashHeld()
-        XCTAssertEqual(held.count, 1)
-        XCTAssertEqual(held.bytes, 2_000_000)
+        XCTAssertEqual(held.count, 1, "a reused Trash path counts once")
+        XCTAssertEqual(held.bytes, 2_000_000, "attributed to the newest session's record")
         XCTAssertNotNil(held.oldest)
 
         let result = await store.purgeTrashedItems()

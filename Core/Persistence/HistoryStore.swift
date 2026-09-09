@@ -62,9 +62,14 @@ public actor HistoryStore {
     public func trashHeld() -> TrashHeld {
         let fm = FileManager()
         var held = TrashHeld()
-        for session in sessions() where !session.undone {
+        // Finder reuses Trash names once the Trash has been emptied, so an old
+        // session's trashPath can point at a NEWER session's file. Count each
+        // path once, attributed to the most recent session (sessions are
+        // newest-first) — otherwise stale records inflate the total.
+        var seen = Set<String>()
+        for session in sessions().sorted(by: { $0.date > $1.date }) where !session.undone {
             for item in session.items {
-                guard let path = item.trashPath, fm.fileExists(atPath: path) else { continue }
+                guard let path = item.trashPath, seen.insert(path).inserted, fm.fileExists(atPath: path) else { continue }
                 held.count += 1
                 held.bytes += item.size
                 if held.oldest == nil || session.date < held.oldest! { held.oldest = session.date }
@@ -77,7 +82,9 @@ public actor HistoryStore {
     /// the user's other trashed files) and marks them non-restorable.
     public func purgeTrashedItems() -> (removed: Int, bytes: Int64, errors: Int) {
         let fm = FileManager()
-        var all = sessions()
+        // Newest first so a reused Trash path is removed (and its size
+        // reported) under the record that actually owns the file today.
+        var all = sessions().sorted { $0.date > $1.date }
         var removed = 0
         var bytes: Int64 = 0
         var errors = 0
