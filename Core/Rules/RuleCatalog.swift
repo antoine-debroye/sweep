@@ -64,6 +64,71 @@ public enum RuleCatalog {
                 tier: .safe
             ))
         }
+        rules.append(CleaningRule(
+            id: "container-caches",
+            category: .systemJunk,
+            title: "Sandboxed app caches",
+            detail: "Caches inside app sandboxes (~/Library/Containers). Teams, Office, WhatsApp… rebuild these on launch.",
+            paths: DynamicPaths.containerCacheRoots(home: home),
+            minAgeDays: 0,
+            minItemBytes: 1_000_000,
+            skipRunningApps: true,
+            tier: .safe
+        ))
+        rules.append(CleaningRule(
+            id: "container-logs",
+            category: .systemJunk,
+            title: "Sandboxed app logs",
+            detail: "Log folders inside app sandboxes.",
+            paths: DynamicPaths.containerLogRoots(home: home),
+            minAgeDays: 3,
+            minItemBytes: 1_000_000,
+            tier: .safe
+        ))
+        rules.append(CleaningRule(
+            id: "container-tmp",
+            category: .systemJunk,
+            title: "Sandboxed app temporary files",
+            detail: "Scratch files inside app sandboxes, untouched for a week.",
+            paths: DynamicPaths.containerTmpRoots(home: home),
+            minAgeDays: 7,
+            minItemBytes: 5_000_000,
+            skipRunningApps: true,
+            tier: .safe
+        ))
+        let groupJunk = DynamicPaths.groupContainerJunk(home: home)
+        rules.append(CleaningRule(
+            id: "group-container-caches",
+            category: .systemJunk,
+            title: "Shared app-group caches",
+            detail: "Cache folders in third-party app groups (~/Library/Group Containers).",
+            paths: groupJunk.caches,
+            minAgeDays: 0,
+            minItemBytes: 1_000_000,
+            skipRunningApps: true,
+            tier: .safe
+        ))
+        rules.append(CleaningRule(
+            id: "group-container-logs",
+            category: .systemJunk,
+            title: "Shared app-group logs & temp",
+            detail: "Log and temporary folders in third-party app groups.",
+            paths: groupJunk.logs + groupJunk.tmp,
+            minAgeDays: 3,
+            minItemBytes: 1_000_000,
+            skipRunningApps: true,
+            tier: .safe
+        ))
+        rules.append(CleaningRule(
+            id: "incomplete-downloads",
+            category: .systemJunk,
+            title: "Incomplete downloads",
+            detail: "Partial browser downloads (.download, .crdownload, .part) abandoned for 3+ days.",
+            paths: [home.appending(path: "Downloads")],
+            extensions: ["download", "crdownload", "part"],
+            minAgeDays: 3,
+            tier: .safe
+        ))
         if let tmpDir = ProcessInfo.processInfo.environment["TMPDIR"], !tmpDir.isEmpty {
             rules.append(CleaningRule(
                 id: "user-temp",
@@ -101,6 +166,30 @@ public enum RuleCatalog {
             tier: .safe,
             requiresFullDiskAccess: true
         ))
+        let chromium = DynamicPaths.chromiumJunk(home: home)
+        rules.append(CleaningRule(
+            id: "browser-profile-caches",
+            category: .browsers,
+            title: "Browser profile caches",
+            detail: "Code, GPU and shader caches inside Chrome/Brave/Edge/Arc/Vivaldi profiles and Firefox cache2. Never bookmarks, passwords, cookies or history.",
+            paths: chromium.safe,
+            contentsOnly: false,
+            minAgeDays: 1,
+            minItemBytes: 1_000_000,
+            skipRunningApps: true,
+            tier: .safe
+        ))
+        rules.append(CleaningRule(
+            id: "browser-offline-data",
+            category: .browsers,
+            title: "Browser offline web-app data & AI models",
+            detail: "Service-worker storage (offline Google Docs, Figma, Notion…) and Chrome's on-device AI model. Re-downloaded when needed.",
+            paths: chromium.review,
+            contentsOnly: false,
+            minAgeDays: 7,
+            skipRunningApps: true,
+            tier: .review
+        ))
 
         // MARK: Developer junk
 
@@ -126,15 +215,34 @@ public enum RuleCatalog {
         rules.append(CleaningRule(
             id: "xcode-device-support",
             category: .developer,
-            title: "Device support files",
-            detail: "Debug symbols for old iOS/watchOS versions. Re-synced when a device connects.",
-            paths: [
-                dev.appending(path: "Xcode/iOS DeviceSupport"),
-                dev.appending(path: "Xcode/watchOS DeviceSupport"),
-                dev.appending(path: "Xcode/tvOS DeviceSupport"),
-            ],
-            minAgeDays: 90,
+            title: "Old device support files",
+            detail: "Debug symbols for OS versions older than the two newest per platform. Re-synced when such a device connects.",
+            paths: DynamicPaths.staleDeviceSupport(home: home, keep: 2),
+            contentsOnly: false,
+            minAgeDays: 30,
             tier: .review
+        ))
+        rules.append(CleaningRule(
+            id: "xcode-products-ibsupport",
+            category: .developer,
+            title: "Xcode build products & IB support",
+            detail: "Leftover build products and Interface Builder scratch data. Rebuilt on demand.",
+            paths: [
+                dev.appending(path: "Xcode/Products"),
+                dev.appending(path: "Xcode/UserData/IB Support"),
+            ],
+            minAgeDays: 7,
+            skipRunningApps: true,
+            tier: .safe
+        ))
+        rules.append(CleaningRule(
+            id: "simulator-device-tmp",
+            category: .developer,
+            title: "Simulator scratch files",
+            detail: "Per-simulator temporary folders and XCTest throwaway devices.",
+            paths: DynamicPaths.simulatorDeviceTmpDirs(home: home) + [dev.appending(path: "XCTestDevices")],
+            minAgeDays: 7,
+            tier: .safe
         ))
         rules.append(CleaningRule(
             id: "simulator-caches",
@@ -319,28 +427,33 @@ public enum RuleCatalog {
             tier: .safe
         ))
 
-        // MARK: Electron app caches — only the cache subfolders, never user data
+        // MARK: Electron app caches — discovered by their Chromium layout, never user data
 
-        let electronApps = ["Notion", "Slack", "discord", "Microsoft Teams", "obsidian", "Figma", "Linear", "Spotify"]
-        let electronCacheSubdirs = ["Cache", "Code Cache", "GPUCache", "Service Worker/CacheStorage"]
-        var electronPaths: [URL] = []
-        for app in electronApps {
-            let base = lib.appending(path: "Application Support/\(app)")
-            for sub in electronCacheSubdirs {
-                electronPaths.append(base.appending(path: sub))
-            }
-        }
+        let electron = DynamicPaths.electronJunk(home: home)
         rules.append(CleaningRule(
             id: "electron-app-caches",
             category: .developer,
             title: "Desktop app caches",
-            detail: "Web caches from Electron apps (Notion, Slack, Discord…). Never their local data or documents.",
-            paths: electronPaths,
+            detail: "Web caches from Electron apps (Notion, Slack, Claude, Discord…). Never their local data or documents.",
+            paths: electron.safe,
             contentsOnly: false,
-            minAgeDays: 7,
+            minAgeDays: 1,
+            minItemBytes: 1_000_000,
             skipRunningApps: true,
             tier: .safe
         ))
+        rules.append(CleaningRule(
+            id: "electron-app-offline-data",
+            category: .developer,
+            title: "Desktop app offline storage & logs",
+            detail: "Service-worker storage and log folders. Apps rebuild them, but offline content reloads on next use.",
+            paths: electron.review,
+            contentsOnly: false,
+            minAgeDays: 7,
+            skipRunningApps: true,
+            tier: .review
+        ))
+
         rules.append(CleaningRule(
             id: "claude-desktop-vm-bundles",
             category: .developer,
@@ -351,6 +464,125 @@ public enum RuleCatalog {
             minAgeDays: 7,
             tier: .review
         ))
+        let claudeSupport = lib.appending(path: "Application Support/Claude")
+        let sdkVersion = (try? String(contentsOf: claudeSupport.appending(path: "claude-code-vm/.sdk-version"), encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let pinned: Set<String> = sdkVersion.map { [$0] } ?? []
+        rules.append(CleaningRule(
+            id: "agent-tool-old-versions",
+            category: .developer,
+            title: "Old AI agent versions",
+            detail: "Previous Claude Code / Cursor Agent builds. The active and newest versions are kept.",
+            paths: DynamicPaths.staleVersionDirs(
+                root: home.appending(path: ".local/share/claude/versions"),
+                activeLink: home.appending(path: ".local/bin/claude"))
+                + DynamicPaths.staleVersionDirs(
+                    root: home.appending(path: ".local/share/cursor-agent/versions"),
+                    activeLink: home.appending(path: ".local/bin/cursor-agent"))
+                + DynamicPaths.staleVersionDirs(root: claudeSupport.appending(path: "claude-code"), pinnedVersions: pinned)
+                + DynamicPaths.staleVersionDirs(root: claudeSupport.appending(path: "claude-code-vm"), pinnedVersions: pinned),
+            contentsOnly: false,
+            minAgeDays: 7,
+            skipRunningApps: true,
+            tier: .safe
+        ))
+        rules.append(CleaningRule(
+            id: "editor-obsolete-extensions",
+            category: .developer,
+            title: "Obsolete editor extensions",
+            detail: "Extension versions VS Code and Cursor have already replaced and marked for removal.",
+            paths: DynamicPaths.obsoleteExtensionDirs(extensionsRoot: home.appending(path: ".vscode/extensions"))
+                + DynamicPaths.obsoleteExtensionDirs(extensionsRoot: home.appending(path: ".vscode-insiders/extensions"))
+                + DynamicPaths.obsoleteExtensionDirs(extensionsRoot: home.appending(path: ".cursor/extensions")),
+            contentsOnly: false,
+            minAgeDays: 0,
+            tier: .safe
+        ))
+        rules.append(CleaningRule(
+            id: "codex-incomplete-runtimes",
+            category: .developer,
+            title: "Incomplete Codex runtime downloads",
+            detail: "Runtime installs that never finished (no runtime.json).",
+            paths: DynamicPaths.incompleteCodexRuntimes(home: home),
+            contentsOnly: false,
+            minAgeDays: 1,
+            tier: .safe
+        ))
+        rules.append(CleaningRule(
+            id: "dev-tool-caches",
+            category: .developer,
+            title: "Build & CLI tool caches",
+            detail: "npx, Vite, webpack, TypeScript, Playwright/Puppeteer, Prisma, Poetry, Ruff, pyenv, rustup, Docker buildx and other tool caches. All re-created on demand.",
+            paths: [
+                home.appending(path: ".npm/_npx"),
+                home.appending(path: ".npm/_logs"),
+                home.appending(path: ".npm/_prebuilds"),
+                home.appending(path: ".yarn/cache"),
+                home.appending(path: ".cache/typescript"),
+                home.appending(path: ".cache/electron"),
+                home.appending(path: ".cache/node-gyp"),
+                home.appending(path: ".node-gyp"),
+                home.appending(path: ".cache/vite"),
+                home.appending(path: ".cache/webpack"),
+                home.appending(path: ".cache/eslint"),
+                home.appending(path: ".cache/prettier"),
+                home.appending(path: ".cache/puppeteer"),
+                home.appending(path: ".cache/prisma"),
+                home.appending(path: ".cache/opencode"),
+                home.appending(path: ".cache/gh"),
+                home.appending(path: ".cache/poetry"),
+                home.appending(path: ".cache/ruff"),
+                home.appending(path: ".cache/mypy"),
+                home.appending(path: ".cache/pre-commit"),
+                home.appending(path: ".cache/swift-package-manager"),
+                home.appending(path: ".cache/bazel"),
+                home.appending(path: ".cache/zig"),
+                home.appending(path: ".cache/node/corepack"),
+                home.appending(path: ".turbo/cache"),
+                home.appending(path: ".parcel-cache"),
+                home.appending(path: ".pyenv/cache"),
+                home.appending(path: ".pytest_cache"),
+                home.appending(path: ".rustup/downloads"),
+                home.appending(path: ".android/build-cache"),
+                home.appending(path: ".android/cache"),
+                home.appending(path: ".docker/buildx/cache"),
+                home.appending(path: ".gradle/daemon"),
+                home.appending(path: ".gradle/workers"),
+                home.appending(path: ".composer/cache"),
+                home.appending(path: ".gem/specs"),
+                home.appending(path: ".bundle/cache"),
+                home.appending(path: ".expo/versions-cache"),
+                home.appending(path: ".expo/template-cache"),
+                home.appending(path: ".expo/ios-simulator-app-cache"),
+                home.appending(path: ".expo/android-apk-cache"),
+                lib.appending(path: "Caches/pypoetry/artifacts"),
+                lib.appending(path: "Caches/pypoetry/cache"),
+                lib.appending(path: "Caches/composer"),
+            ],
+            contentsOnly: false,
+            minAgeDays: 14,
+            tier: .safe
+        ))
+        if let userCacheDir = darwinUserDirectory(kind: "C") {
+            let darwinCache = URL(fileURLWithPath: userCacheDir)
+            rules.append(CleaningRule(
+                id: "darwin-user-caches",
+                category: .developer,
+                title: "Compiler & GPU shader caches",
+                detail: "Clang module cache and Metal shader caches in the per-user cache folder. Rebuilt on next build/launch.",
+                paths: [
+                    darwinCache.appending(path: "clang"),
+                    darwinCache.appending(path: "com.apple.metal"),
+                    darwinCache.appending(path: "com.apple.metalfe"),
+                    darwinCache.appending(path: "com.apple.gpuarchiver"),
+                    darwinCache.appending(path: "org.python.python"),
+                ],
+                contentsOnly: false,
+                minAgeDays: 3,
+                skipRunningApps: true,
+                tier: .safe
+            ))
+        }
 
         // MARK: Mobile toolchains (Android emulators & SDK)
 
@@ -412,6 +644,20 @@ public enum RuleCatalog {
             paths: [lib.appending(path: "Application Support/MobileSync/Backup")],
             minAgeDays: 0,
             tier: .explicitOnly
+        ))
+        rules.append(CleaningRule(
+            id: "device-firmware",
+            category: .mailMedia,
+            title: "Device firmware downloads",
+            detail: "iOS/iPadOS restore images (.ipsw) Finder downloaded for an update. Re-downloaded if ever needed.",
+            paths: [
+                lib.appending(path: "iTunes/iPhone Software Updates"),
+                lib.appending(path: "iTunes/iPad Software Updates"),
+                lib.appending(path: "iTunes/iPod Software Updates"),
+            ],
+            extensions: ["ipsw"],
+            minAgeDays: 7,
+            tier: .review
         ))
 
         // MARK: Orphan tool dotfiles (stale only)
@@ -507,6 +753,7 @@ public enum RuleCatalog {
                     extensions: rule.extensions,
                     excludeNames: rule.excludeNames,
                     minAgeDays: max(rule.minAgeDays, minAgeDays),
+                    minItemBytes: rule.minItemBytes,
                     skipRunningApps: true,
                     tier: rule.tier,
                     domain: rule.domain,

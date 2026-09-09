@@ -63,8 +63,9 @@ final class AutoTrimScheduler {
         running = true
         defer { running = false }
 
-        let running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier?.lowercased() })
-        let engine = ScanEngine(policy: model.policy, whitelist: model.settings.whitelist, runningBundleIDs: running)
+        let running = RunningApps.snapshot()
+        let engine = ScanEngine(policy: model.policy, whitelist: model.settings.whitelist,
+                                runningBundleIDs: running.bundleIDs, runningAppNames: running.names)
         let rules = RuleCatalog.autoTrimRules(minAgeDays: model.settings.autoTrimMinAgeDays)
         let report = await engine.scanReport(rules: rules)
         model.settings.lastAutoTrim = Date()

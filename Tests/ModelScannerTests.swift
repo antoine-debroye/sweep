@@ -63,6 +63,34 @@ final class ModelScannerTests: XCTestCase {
         XCTAssertEqual(models.first?.name, "meta-llama/Llama-3-8B")
     }
 
+    func testOtherAppModelsFoundBySizeAndExtension() throws {
+        try write("Library/Application Support/com.flowclone.app/models/ggml-small.en.bin", bytes: 60_000_000)
+        try write("Library/Application Support/com.flowclone.app/models/llm/Qwen3-0.6B-Q4_K_M.gguf", bytes: 70_000_000)
+        try write("Library/Application Support/com.flowclone.app/models/config.json", bytes: 200)
+        try write("Library/Application Support/com.flowclone.app/models/tiny.bin", bytes: 1_000)          // below floor
+        try write("Library/Application Support/tts/tts_models--multilingual--xtts_v2/model.pth", bytes: 55_000_000)
+        // Two generically named weights in sibling folders must stay distinct.
+        try write("Library/Application Support/com.flowclone.app/models/llm/a/model.safetensors", bytes: 51_000_000)
+        try write("Library/Application Support/com.flowclone.app/models/llm/b/model.safetensors", bytes: 52_000_000)
+        try write("Library/Application Support/anythingllm-desktop/storage/vector-cache/x.bin", bytes: 80_000_000) // not a models dir
+        try write("Library/Application Support/com.apple.Something/models/x.bin", bytes: 80_000_000)      // Apple skipped
+
+        let models = ModelScanner.scanOtherApps(home: home)
+        XCTAssertEqual(models.count, 5, "case-insensitive 'models'/'Models' must not double-list: \(models.map(\.name))")
+        XCTAssertEqual(Set(models.map(\.name)), [
+            "com.flowclone.app · ggml-small.en.bin",
+            "com.flowclone.app · llm/Qwen3-0.6B-Q4_K_M.gguf",
+            "tts · model.pth",
+            "com.flowclone.app · llm/a/model.safetensors",
+            "com.flowclone.app · llm/b/model.safetensors",
+        ])
+        XCTAssertEqual(Set(models.map(\.id)).count, models.count, "ids must be unique per file")
+        for m in models {
+            XCTAssertEqual(m.provider, .otherApps)
+            if case .trashDirectory = m.removal {} else { XCTFail("other-app models are trashed as files") }
+        }
+    }
+
     func testMissingProvidersYieldNothing() {
         // No model directories at all → empty, no crash.
         XCTAssertTrue(ModelScanner.scan(home: home).isEmpty)

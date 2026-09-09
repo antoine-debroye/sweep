@@ -6,12 +6,16 @@ public enum ModelProvider: String, Sendable, CaseIterable {
     case ollama
     case lmStudio
     case huggingFace
+    /// Models bundled by other desktop apps (Whisper/TTS/LLM weights in their
+    /// Application Support folder) and framework download caches.
+    case otherApps
 
     public var label: String {
         switch self {
         case .ollama: "Ollama"
         case .lmStudio: "LM Studio"
         case .huggingFace: "Hugging Face"
+        case .otherApps: "Other apps"
         }
     }
 
@@ -20,6 +24,7 @@ public enum ModelProvider: String, Sendable, CaseIterable {
         case .ollama: "cube.transparent"
         case .lmStudio: "cpu"
         case .huggingFace: "face.smiling"
+        case .otherApps: "app.badge"
         }
     }
 }
@@ -71,7 +76,88 @@ public enum ModelScanner {
         models += scanOllama(home: home)
         models += scanLMStudio(home: home)
         models += scanHuggingFace(home: home)
+        models += scanOtherApps(home: home)
         return models.sorted { $0.sizeBytes > $1.sizeBytes }
+    }
+
+    // MARK: Other apps
+
+    /// File extensions that identify model weights. Directory bundles
+    /// (.mlmodelc, .mlpackage) are treated as one unit.
+    static let modelExtensions: Set<String> = [
+        "gguf", "safetensors", "bin", "pth", "pt", "ckpt", "onnx", "tflite", "npz", "ggml",
+        "mlmodelc", "mlpackage", "pte",
+    ]
+    static let otherAppsMinBytes: Int64 = 50_000_000
+
+    /// Folders where desktop apps keep downloaded weights, relative to the
+    /// app's Application Support folder, plus framework caches under ~/.cache.
+    static func otherAppModelRoots(home: URL) -> [(app: String, root: URL)] {
+        let support = home.appending(path: "Library/Application Support")
+        var roots: [(String, URL)] = []
+        var seen = Set<String>()
+        for app in DynamicPaths.directories(in: support) {
+            let name = app.lastPathComponent
+            if name.lowercased().hasPrefix("com.apple.") { continue }
+            // APFS is case-insensitive by default: "models" and "Models" are the
+            // same folder, so key the de-dupe on the lowercased path.
+            for sub in ["models", "Models", "whisper-models"] where DynamicPaths.isDirectory(app.appending(path: sub)) {
+                let root = app.appending(path: sub)
+                guard seen.insert(root.path.lowercased()).inserted else { continue }
+                roots.append((name, root))
+            }
+            // Coqui TTS keeps one folder per model directly under its app dir.
+            for child in DynamicPaths.directories(in: app) where child.lastPathComponent.hasPrefix("tts_models") {
+                roots.append((name, child))
+            }
+        }
+        for (label, rel) in [("PyTorch", ".cache/torch"), ("Whisper", ".cache/whisper")]
+        where DynamicPaths.isDirectory(home.appending(path: rel)) {
+            roots.append((label, home.appending(path: rel)))
+        }
+        return roots
+    }
+
+    static func scanOtherApps(home: URL) -> [LocalModel] {
+        var models: [LocalModel] = []
+        for (app, root) in otherAppModelRoots(home: home) {
+            models += modelFiles(under: root, root: root, app: app, depth: 0)
+        }
+        return models
+    }
+
+    private static func modelFiles(under dir: URL, root: URL, app: String, depth: Int) -> [LocalModel] {
+        let fm = FileManager()
+        guard depth <= 3, let entries = try? fm.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
+        ) else { return [] }
+        var models: [LocalModel] = []
+        for entry in entries {
+            guard !Task.isCancelled else { break }
+            let isDir = (try? entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            let ext = entry.pathExtension.lowercased()
+            if modelExtensions.contains(ext) {
+                let stats = DirectorySizer.stats(of: entry)
+                guard stats.size >= otherAppsMinBytes else { continue }
+                // Name = path relative to the models folder. Many apps ship
+                // several "model.safetensors", so the folder is what tells them
+                // apart — and `LocalModel.id` derives from the name, so it must
+                // be unique per file.
+                let relative = entry.pathComponents.dropFirst(root.pathComponents.count).joined(separator: "/")
+                models.append(LocalModel(
+                    provider: .otherApps,
+                    name: "\(app) · \(relative)",
+                    detail: "\(app) · moves to Trash · the app re-downloads it when needed",
+                    sizeBytes: stats.size,
+                    lastUsed: stats.newestModification,
+                    location: entry,
+                    removal: .trashDirectory(entry)
+                ))
+            } else if isDir {
+                models += modelFiles(under: entry, root: root, app: app, depth: depth + 1)
+            }
+        }
+        return models
     }
 
     // MARK: Ollama

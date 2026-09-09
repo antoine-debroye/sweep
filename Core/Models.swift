@@ -164,6 +164,9 @@ public struct CleaningRule: Sendable, Identifiable {
     /// An item is only offered when nothing inside it was modified in the last
     /// N days. 0 disables the gate.
     public let minAgeDays: Int
+    /// Items smaller than this are not worth a row (keeps sweeps over hundreds
+    /// of sandbox scratch folders from flooding the results). 0 = no floor.
+    public let minItemBytes: Int64
     /// Skip items that belong to an app that is currently running (cache and
     /// saved-state folders named after the app's bundle id).
     public let skipRunningApps: Bool
@@ -185,6 +188,7 @@ public struct CleaningRule: Sendable, Identifiable {
         extensions: Set<String>? = nil,
         excludeNames: Set<String> = [],
         minAgeDays: Int = 0,
+        minItemBytes: Int64 = 0,
         skipRunningApps: Bool = false,
         tier: SafetyTier,
         domain: RuleDomain = .user,
@@ -201,6 +205,7 @@ public struct CleaningRule: Sendable, Identifiable {
         self.extensions = extensions
         self.excludeNames = Set(excludeNames.map { $0.lowercased() })
         self.minAgeDays = minAgeDays
+        self.minItemBytes = minItemBytes
         self.skipRunningApps = skipRunningApps
         self.tier = tier
         self.domain = domain
