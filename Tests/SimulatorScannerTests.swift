@@ -82,6 +82,26 @@ final class SimulatorScannerTests: XCTestCase {
         XCTAssertTrue(s.deviceIDs.contains("D7"), "unavailable device is suggested")
     }
 
+    func testSameVersionBuildsResolveDeterministically() throws {
+        // Two Ready images of iOS 26.5 with different builds, listed in either
+        // order: the higher build is always "newest" and receives the devices.
+        let a = #"{"build":"23F73","identifier":"X-73","platformIdentifier":"com.apple.platform.iphonesimulator","runtimeIdentifier":"com.apple.CoreSimulator.SimRuntime.iOS-26-5","sizeBytes":1,"state":"Ready","version":"26.5"}"#
+        let b = #"{"build":"23F77","identifier":"X-77","platformIdentifier":"com.apple.platform.iphonesimulator","runtimeIdentifier":"com.apple.CoreSimulator.SimRuntime.iOS-26-5","sizeBytes":1,"state":"Ready","version":"26.5"}"#
+        let devices = #"{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-26-5":[{"udid":"D1","name":"iPhone","state":"Shutdown","isAvailable":true}]}}"#
+        for json in ["{\"X-73\":\(a),\"X-77\":\(b)}", "{\"X-77\":\(b),\"X-73\":\(a)}"] {
+            let inv = SimulatorScanner.assemble(
+                runtimes: try SimulatorScanner.parseRuntimes(Data(json.utf8)),
+                devices: try SimulatorScanner.parseDevices(Data(devices.utf8))
+            )
+            XCTAssertEqual(inv.runtimes.map(\.id), ["X-77", "X-73"])
+            XCTAssertTrue(inv.runtimes[0].isNewestForPlatform)
+            XCTAssertFalse(inv.runtimes[1].isNewestForPlatform)
+            XCTAssertEqual(inv.runtimes[0].devices.map(\.id), ["D1"])
+            let s = SimulatorScanner.suggest(inv)
+            XCTAssertEqual(s.runtimeIDs, ["X-73"], "the older build with no booted devices is the one to suggest")
+        }
+    }
+
     func testVersionAndLabelHelpers() {
         XCTAssertEqual(SimulatorScanner.compareVersion("26.5", "26.4.1"), .orderedDescending)
         XCTAssertEqual(SimulatorScanner.compareVersion("18.4", "26.0.1"), .orderedAscending)
