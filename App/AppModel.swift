@@ -82,6 +82,9 @@ final class AppModel {
     var disk: DiskSnapshot?
     var lifetimeFreed: Int64 = 0
     var lastClean: Date?
+    /// What Sweep moved to the Trash that is still there (no space freed yet).
+    var trashHeld = HistoryStore.TrashHeld()
+    var trashPurgeMessage: String?
     /// True while a manual "Run auto-trim now" is in flight. Observed by the UI;
     /// `AutoTrimScheduler` isn't `@Observable`, so its own `running` flag can't
     /// drive SwiftUI directly.
@@ -145,6 +148,17 @@ final class AppModel {
     func refreshHistorySummary() async {
         lifetimeFreed = await history.lifetimeFreed()
         lastClean = await history.lastCleanDate()
+        trashHeld = await history.trashHeld()
+    }
+
+    /// Permanently deletes only what Sweep itself put in the Trash.
+    func purgeSweepTrash() async {
+        let result = await history.purgeTrashedItems()
+        trashPurgeMessage = result.errors == 0
+            ? "Removed \(result.removed) item\(result.removed == 1 ? "" : "s") from the Trash · \(result.bytes.sweepBytes) freed."
+            : "Removed \(result.removed) item\(result.removed == 1 ? "" : "s") · \(result.errors) couldn't be removed."
+        await refreshHistorySummary()
+        refreshDisk()
     }
 
     /// Full Disk Access probe: the per-user TCC database is unreadable without

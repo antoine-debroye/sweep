@@ -46,6 +46,64 @@ public actor HistoryStore {
         sessions().first?.date
     }
 
+    /// What Sweep moved to the Trash that is still sitting there: Trash-first
+    /// cleaning does not free space until the Trash is emptied.
+    public struct TrashHeld: Sendable, Equatable {
+        public var count = 0
+        public var bytes: Int64 = 0
+        public var oldest: Date?
+        public init(count: Int = 0, bytes: Int64 = 0, oldest: Date? = nil) {
+            self.count = count
+            self.bytes = bytes
+            self.oldest = oldest
+        }
+    }
+
+    public func trashHeld() -> TrashHeld {
+        let fm = FileManager()
+        var held = TrashHeld()
+        for session in sessions() where !session.undone {
+            for item in session.items {
+                guard let path = item.trashPath, fm.fileExists(atPath: path) else { continue }
+                held.count += 1
+                held.bytes += item.size
+                if held.oldest == nil || session.date < held.oldest! { held.oldest = session.date }
+            }
+        }
+        return held
+    }
+
+    /// Permanently removes ONLY the items Sweep itself put in the Trash (never
+    /// the user's other trashed files) and marks them non-restorable.
+    public func purgeTrashedItems() -> (removed: Int, bytes: Int64, errors: Int) {
+        let fm = FileManager()
+        var all = sessions()
+        var removed = 0
+        var bytes: Int64 = 0
+        var errors = 0
+        for s in all.indices where !all[s].undone {
+            for i in all[s].items.indices {
+                guard let path = all[s].items[i].trashPath else { continue }
+                guard Cleaner.isInTrash(URL(fileURLWithPath: path)) else { continue }
+                if !fm.fileExists(atPath: path) {
+                    all[s].items[i].trashPath = nil
+                    continue
+                }
+                do {
+                    try fm.removeItem(atPath: path)
+                    all[s].items[i].trashPath = nil
+                    removed += 1
+                    bytes += all[s].items[i].size
+                } catch {
+                    errors += 1
+                }
+            }
+        }
+        cached = all
+        persist()
+        return (removed, bytes, errors)
+    }
+
     /// Restores every item of the session that still exists in the Trash.
     /// Returns (restored, missing) counts.
     public func undo(sessionID: UUID) -> (restored: Int, missing: Int) {

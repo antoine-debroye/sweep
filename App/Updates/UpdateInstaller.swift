@@ -167,6 +167,7 @@ enum UpdateInstaller {
         process.arguments = [scriptURL.path]
         try process.run()   // detached child; survives our termination
 
+        Lifecycle.terminating("self-update relaunch (installing \(newApp.lastPathComponent) over \(dest.path))")
         NSApp.terminate(nil)
     }
 }

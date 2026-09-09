@@ -32,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let serviceProvider = ServiceProvider()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Lifecycle.launched()
         // Register the "Uninstall with Sweep" Finder service (declared in
         // Info.plist under NSServices).
         NSApp.servicesProvider = serviceProvider
@@ -41,5 +42,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         // Keep running in the menu bar so auto-trim can do its job.
         false
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let event = NSApp.currentEvent.map { "\($0.type)" } ?? "no event"
+        Lifecycle.terminating("applicationShouldTerminate (current event: \(event))")
+        return .terminateNow
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        Lifecycle.terminating("applicationWillTerminate")
     }
 }

@@ -23,6 +23,10 @@ struct DashboardView: View {
 
                 heroCard
 
+                if model.trashHeld.bytes > 0 || model.trashPurgeMessage != nil {
+                    trashCard
+                }
+
                 HStack(spacing: 14) {
                     StatTile(
                         title: "Freed with Sweep",
@@ -50,6 +54,51 @@ struct DashboardView: View {
             .padding(24)
         }
         .onAppear { model.refreshDisk() }
+    }
+
+    @State private var confirmTrashPurge = false
+
+    /// Trash-first cleaning is reversible, but it also frees nothing until the
+    /// Trash is emptied. Surface what Sweep is still holding there.
+    private var trashCard: some View {
+        HStack(spacing: 14) {
+            Image(systemName: "trash.circle")
+                .font(.system(size: 26))
+                .foregroundStyle(Theme.amber)
+            VStack(alignment: .leading, spacing: 3) {
+                if model.trashHeld.bytes > 0 {
+                    Text("Trash holds \(model.trashHeld.bytes.sweepBytes) from Sweep")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("\(model.trashHeld.count) items, oldest \(model.trashHeld.oldest?.sweepRelative ?? "—"). Nothing is freed until they leave the Trash; undo from History still works until then.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                } else if let message = model.trashPurgeMessage {
+                    Text(message)
+                        .font(.system(size: 12.5, weight: .medium))
+                }
+            }
+            Spacer()
+            if model.trashHeld.bytes > 0 {
+                Button {
+                    confirmTrashPurge = true
+                } label: {
+                    Label("Free \(model.trashHeld.bytes.sweepBytes)", systemImage: "trash.slash")
+                }
+                .buttonStyle(SecondaryButtonStyle())
+            }
+        }
+        .sweepCard()
+        .confirmationDialog(
+            "Permanently remove \(model.trashHeld.count) items Sweep put in the Trash?",
+            isPresented: $confirmTrashPurge
+        ) {
+            Button("Remove permanently (\(model.trashHeld.bytes.sweepBytes))", role: .destructive) {
+                Task { await model.purgeSweepTrash() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Only items Sweep moved to the Trash are removed; anything else in your Trash is untouched. They can no longer be restored from History afterwards.")
+        }
     }
 
     private var greeting: String {

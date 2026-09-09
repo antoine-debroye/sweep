@@ -195,6 +195,40 @@ final class EngineTests: XCTestCase {
 
     // MARK: - Project artifacts
 
+    func testTrashHeldAndPurgeOnlyTouchSweepsOwnItems() async throws {
+        let trash = fixtureHome.appending(path: ".Trash")
+        try fm.createDirectory(at: trash, withIntermediateDirectories: true)
+        try write(".Trash/sweep-moved.bin", megabytes: 2, date: Date())
+        try write(".Trash/users-own-file.txt", megabytes: 1, date: Date())
+        // A recorded item whose Trash copy is already gone must not count.
+        let store = HistoryStore(fileURL: fixtureHome.appending(path: "history.json"))
+        let session = CleanSession(date: Date().addingTimeInterval(-3 * 86_400), source: .smartScan, items: [
+            CleanedItem(originalPath: "/orig/sweep-moved.bin", trashPath: trash.appending(path: "sweep-moved.bin").path,
+                        size: 2_000_000, displayName: "sweep-moved.bin", category: .systemJunk),
+            CleanedItem(originalPath: "/orig/gone.bin", trashPath: trash.appending(path: "gone.bin").path,
+                        size: 9_000_000, displayName: "gone.bin", category: .systemJunk),
+            CleanedItem(originalPath: "/orig/permanent.bin", trashPath: nil,
+                        size: 5_000_000, displayName: "permanent.bin", category: .systemJunk),
+        ], errors: [])
+        await store.add(session)
+
+        let held = await store.trashHeld()
+        XCTAssertEqual(held.count, 1)
+        XCTAssertEqual(held.bytes, 2_000_000)
+        XCTAssertNotNil(held.oldest)
+
+        let result = await store.purgeTrashedItems()
+        XCTAssertEqual(result.removed, 1)
+        XCTAssertEqual(result.bytes, 2_000_000)
+        XCTAssertEqual(result.errors, 0)
+        XCTAssertFalse(fm.fileExists(atPath: trash.appending(path: "sweep-moved.bin").path))
+        XCTAssertTrue(fm.fileExists(atPath: trash.appending(path: "users-own-file.txt").path), "the user's own Trash content is never touched")
+        let after = await store.trashHeld()
+        XCTAssertEqual(after.count, 0)
+        let restorable = await store.sessions().first?.restorableCount
+        XCTAssertEqual(restorable, 0, "purged items must no longer be offered for undo")
+    }
+
     func testProjectArtifactScannerFindsStaleBuildDirs() throws {
         let old = Date().addingTimeInterval(-60 * 86_400)
         try write("Developer/myapp/node_modules/pkg/index.js", megabytes: 1, date: old)

@@ -139,9 +139,45 @@ public enum ProjectArtifactScanner {
         minAgeDays: Int,
         policy: SafetyPolicy
     ) -> [ScanItem] {
-        let fm = FileManager()
-        var items: [ScanItem] = []
+        // Phase 1 (cheap, sequential): walk the dev folders and collect the
+        // artifact directories. Phase 2 (the expensive part — sizing tens of
+        // thousands of files per node_modules) runs concurrently per artifact.
+        let candidates = artifactCandidates(devFolders: devFolders, policy: policy)
+        guard !candidates.isEmpty, !Task.isCancelled else { return [] }
 
+        let results = ConcurrentResults<ScanItem>()
+        DispatchQueue.concurrentPerform(iterations: candidates.count) { index in
+            guard !results.cancelled else { return }
+            let url = candidates[index]
+            let stats = DirectorySizer.stats(of: url)
+            guard stats.size > 0 else { return }
+            if minAgeDays > 0 {
+                let newest = stats.newestModification ?? .distantPast
+                guard Date().timeIntervalSince(newest) / 86_400 >= Double(minAgeDays) else { return }
+            }
+            let name = url.lastPathComponent
+            let project = url.deletingLastPathComponent().lastPathComponent
+            results.append(ScanItem(
+                ruleID: "project-artifacts",
+                category: .projectArtifacts,
+                url: url,
+                displayName: "\(project)/\(name)",
+                detail: "regenerates on next build/install",
+                size: stats.size,
+                fileCount: stats.fileCount,
+                newestModification: stats.newestModification,
+                tier: .review,
+                domain: .user
+            ))
+        }
+        return results.items.sorted { $0.size > $1.size }
+    }
+
+    /// Artifact directories under the dev folders (max depth 5, hidden
+    /// folders pruned, artifacts themselves never descended into).
+    static func artifactCandidates(devFolders: [URL], policy: SafetyPolicy) -> [URL] {
+        let fm = FileManager()
+        var candidates: [URL] = []
         for folder in devFolders {
             guard fm.fileExists(atPath: folder.path) else { continue }
             guard let enumerator = fm.enumerator(
@@ -152,7 +188,7 @@ public enum ProjectArtifactScanner {
             ) else { continue }
 
             for case let url as URL in enumerator {
-                guard !Task.isCancelled else { return items }
+                guard !Task.isCancelled else { return candidates }
                 if enumerator.level > 5 {
                     enumerator.skipDescendants()
                     continue
@@ -168,28 +204,34 @@ public enum ProjectArtifactScanner {
                 guard artifactNames.contains(name) else { continue }
                 enumerator.skipDescendants()
                 guard !policy.isProtected(url) else { continue }
-
-                let stats = DirectorySizer.stats(of: url)
-                guard stats.size > 0 else { continue }
-                if minAgeDays > 0 {
-                    let newest = stats.newestModification ?? .distantPast
-                    guard Date().timeIntervalSince(newest) / 86_400 >= Double(minAgeDays) else { continue }
-                }
-                let project = url.deletingLastPathComponent().lastPathComponent
-                items.append(ScanItem(
-                    ruleID: "project-artifacts",
-                    category: .projectArtifacts,
-                    url: url,
-                    displayName: "\(project)/\(name)",
-                    detail: "regenerates on next build/install",
-                    size: stats.size,
-                    fileCount: stats.fileCount,
-                    newestModification: stats.newestModification,
-                    tier: .review,
-                    domain: .user
-                ))
+                candidates.append(url)
             }
         }
-        return items.sorted { $0.size > $1.size }
+        return candidates
+    }
+}
+
+/// Lock-protected collector for `concurrentPerform` workers. Sizing runs
+/// outside any Task, so cancellation is sampled once up front and re-checked
+/// by workers through `cancelled`.
+final class ConcurrentResults<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [T] = []
+    private let cancelFlag: Bool
+
+    init() { cancelFlag = Task.isCancelled }
+
+    var cancelled: Bool { cancelFlag }
+
+    func append(_ item: T) {
+        lock.lock()
+        storage.append(item)
+        lock.unlock()
+    }
+
+    var items: [T] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
     }
 }
