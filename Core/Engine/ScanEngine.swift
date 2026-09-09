@@ -9,11 +9,21 @@ public struct ScanEngine: Sendable {
     public let whitelist: [String]
     /// Bundle ids of currently running apps, used by rules that skip live data.
     public let runningBundleIDs: Set<String>
+    /// Localized names of running apps (lowercased). Electron apps keep their
+    /// data under the display name, so this is what makes the running-app
+    /// guard work for them.
+    public let runningAppNames: Set<String>
 
-    public init(policy: SafetyPolicy, whitelist: [String] = [], runningBundleIDs: Set<String> = []) {
+    public init(
+        policy: SafetyPolicy,
+        whitelist: [String] = [],
+        runningBundleIDs: Set<String> = [],
+        runningAppNames: Set<String> = []
+    ) {
         self.policy = policy
         self.whitelist = whitelist
         self.runningBundleIDs = runningBundleIDs
+        self.runningAppNames = runningAppNames
     }
 
     public func scan(rules: [CleaningRule]) -> AsyncStream<ScanEvent> {
@@ -87,11 +97,11 @@ public struct ScanEngine: Sendable {
                 guard !Task.isCancelled else { return results }
                 guard passesGates(candidate, rule: rule) else { continue }
                 if rule.skipRunningApps,
-                   RunningAppGuard.isOwnedByRunningApp(candidate, running: runningBundleIDs) {
+                   RunningAppGuard.isOwnedByRunningApp(candidate, running: runningBundleIDs, names: runningAppNames) {
                     continue
                 }
                 let stats = DirectorySizer.stats(of: candidate)
-                guard stats.size > 0 else { continue }
+                guard stats.size > 0, stats.size >= rule.minItemBytes else { continue }
                 if let item = makeItem(candidate, rule: rule, stats: stats) {
                     results.append(item)
                 }
@@ -160,13 +170,31 @@ public struct ScanEngine: Sendable {
         )
     }
 
+    /// Human-readable name for a scan item. Items nested inside an app's data
+    /// folder (sandbox container, Application Support, browser profile) are
+    /// prefixed with the owning app so "Cache" rows are not all identical.
     static func displayName(for url: URL) -> String {
         let component = url.lastPathComponent
         // Friendlier names for common cache folder shapes.
         switch component.lowercased() {
         case "chrome": return "Chrome"
         case "caches" where url.path.lowercased().contains("safari"): return "Safari"
-        default: return component
+        default: break
         }
+
+        let components = url.pathComponents
+        let anchors: Set<String> = ["Application Support", "Containers", "Group Containers"]
+        guard let anchorIndex = components.lastIndex(where: { anchors.contains($0) }),
+              anchorIndex + 1 < components.count - 1 else { return component }
+        // Everything after the anchor, minus the structural folders that
+        // carry no information for the user.
+        let noise: Set<String> = ["Data", "Library", "User Data", "Partitions", "Service Worker", "User"]
+        var parts = Array(components[(anchorIndex + 1)...]).filter { !noise.contains($0) }
+        // Chromium/Electron vendors nest one level deeper (Google/Chrome,
+        // BraveSoftware/Brave-Browser); drop the vendor folder.
+        if parts.count > 2, ["Google", "BraveSoftware"].contains(parts[0]) { parts.removeFirst() }
+        guard parts.count >= 2 else { return component }
+        if parts.count > 3 { parts = [parts[0]] + parts.suffix(2) }
+        return parts.joined(separator: " › ")
     }
 }

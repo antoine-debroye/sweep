@@ -145,8 +145,9 @@ struct MenuBarView: View {
         quickCleaning = true
         quickCleanResult = nil
         Task {
-            let running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier?.lowercased() })
-            let engine = ScanEngine(policy: model.policy, whitelist: model.settings.whitelist, runningBundleIDs: running)
+            let running = RunningApps.snapshot()
+            let engine = ScanEngine(policy: model.policy, whitelist: model.settings.whitelist,
+                                    runningBundleIDs: running.bundleIDs, runningAppNames: running.names)
             let rules = RuleCatalog.autoTrimRules(minAgeDays: model.settings.autoTrimMinAgeDays)
             let report = await engine.scanReport(rules: rules)
             guard !report.items.isEmpty else {

@@ -16,8 +16,8 @@ DMG.
 | **Memory** | Pressure graph, memory breakdown, top consumers, **Flush RAM** (system `purge`) |
 | **Apps** | Full uninstaller: the bundle plus caches, preferences, containers, launch agents… with **Strict / Enhanced / Deep** match depth (Deep also finds team-ID app groups and heuristic matches, flagged for review), a **Leftovers** scanner for apps you deleted long ago, and a Finder **“Uninstall with Sweep”** right-click service |
 | **Large Files** | Files ≥100 MB in your home folder, oldest-first review, explicit selection only |
-| **AI Models** | Inventories local LLM/ML models from **Ollama, LM Studio and Hugging Face** with size & last-used; remove selectively. Ollama via its safe `ollama rm`, the rest Trash-first. Never auto-selected |
-| **Dev Cleaner** | Xcode derived data & device support, npm/yarn/pnpm/bun, pip/uv, cargo, gradle, brew, **Cursor/VS Code/Electron caches**, **Claude Desktop VM bundles**, **Android emulators & SDK**, Docker prune (with `docker system df`), stale `node_modules`/`target`/`.build`, and an **AI-agent worktree cleaner** that runs `git status` on each worktree — dirty ones are locked, orphaned ones are reclaimable |
+| **AI Models** | Inventories local LLM/ML models from **Ollama, LM Studio and Hugging Face**, plus weights bundled by other apps (Whisper/TTS/LLM files in their Application Support folders, PyTorch/Whisper caches), with size & last-used; remove selectively. Ollama via its safe `ollama rm`, the rest Trash-first. Never auto-selected |
+| **Dev Cleaner** | **Simulator runtimes & devices** (size, last boot, "select suggested" for unusable/old runtimes and stale devices; removed through `simctl`, never raw `rm`), Xcode derived data & device support (keeps the two newest per platform), npm/yarn/pnpm/bun, pip/uv, cargo, gradle, brew, **Cursor/VS Code/Electron caches**, **Claude Desktop VM bundles**, **Android emulators & SDK**, Docker prune and deep prune (with `docker system df`), stale Claude Code / Cursor Agent versions, obsolete editor extensions, npx/Vite/Poetry/rustup/buildx-style tool caches, stale `node_modules`/`target`/`.build`, and an **AI-agent worktree cleaner** that runs `git status` on each worktree — dirty ones are locked, orphaned ones are reclaimable |
 | **Optimize** | Flush DNS, rebuild Spotlight/LaunchServices, thin Time Machine snapshots, restart Finder/Dock |
 | **History** | Every clean logged; one-click **Undo** restores from Trash |
 | **Auto-Trim** | Background menu-bar agent trims Safe-tier junk untouched for 30+ days, Trash-first, with a notification and undo. Configurable interval and low-disk threshold, plus a **Run now** button in Settings |
@@ -32,7 +32,16 @@ DMG.
 - **Only regenerable data is auto-cleanable.** Real files appear only in explicit
   review flows and are never pre-selected.
 - **Trash-first with undo manifests** — permanent deletion is opt-in.
-- **Running-app guard** — caches of apps currently running are left alone.
+- **Running-app guard** — caches of apps currently running are left alone, matched
+  by bundle id *and* app name (Electron apps store data under their display name).
+- **Cloud backing stores are hard-protected** — OneDrive and other File Provider
+  sync clients keep the real files in a group container, not in `CloudStorage`;
+  that container is on the deny-list too.
+- **Sandbox, browser-profile and Electron caches are sweeps of cache folders only** —
+  never `Documents`, bookmarks, cookies, IndexedDB, local storage or databases.
+  Offline web-app storage and Chrome's on-device AI model are Review tier.
+- **Simulators go through `simctl`**, never a raw delete of CoreSimulator folders,
+  and the newest runtime per platform is never suggested.
 - **Whitelist** anything else in Settings; iCloud placeholders are never touched.
 - The privileged helper accepts only an allow-listed set of system-junk paths —
   it can't be used as a generic delete-as-root service.

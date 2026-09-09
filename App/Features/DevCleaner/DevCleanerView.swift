@@ -14,6 +14,11 @@ final class DevCleanerModel {
     var statusMessage: String?
     var dockerDF: String?
     var toolOutputs: [String: ToolRun] = [:]
+    var simulators = SimulatorInventory()
+    var simulatorSelection: Set<String> = []
+    var simulatorBusy = false
+    var simulatorStatus: String?
+    var confirmSimulatorRemoval = false
 
     struct ToolRun {
         var running = false
@@ -32,8 +37,9 @@ final class DevCleanerModel {
 
         // Editor-cache rules use skipRunningApps, so the engine needs the live
         // bundle ids or the guard is a no-op.
-        let running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier?.lowercased() })
-        let engine = ScanEngine(policy: model.policy, whitelist: model.settings.whitelist, runningBundleIDs: running)
+        let running = RunningApps.snapshot()
+        let engine = ScanEngine(policy: model.policy, whitelist: model.settings.whitelist,
+                                runningBundleIDs: running.bundleIDs, runningAppNames: running.names)
         let devRules = RuleCatalog.rules().filter { $0.category == .developer }
         let devFolders = model.settings.devFolders.map { URL(fileURLWithPath: $0) }
         let minAge = artifactMinAgeDays
@@ -41,7 +47,10 @@ final class DevCleanerModel {
 
         Task {
             let report = await engine.scanReport(rules: devRules)
-            self.items = report.items.sorted { $0.size > $1.size }
+            var seen = Set<String>()
+            self.items = report.items
+                .filter { seen.insert($0.url.path).inserted }
+                .sorted { $0.size > $1.size }
             self.selection.formUnion(report.items.filter { $0.tier == .safe }.map(\.id))
 
             let found = await Task.detached(priority: .userInitiated) {
@@ -53,6 +62,75 @@ final class DevCleanerModel {
 
             self.scanning = false
             self.fetchDockerDF()
+            await self.scanSimulators()
+        }
+    }
+
+    // MARK: - Simulators
+
+    func scanSimulators() async {
+        simulatorSelection = []
+        simulators = await SimulatorScanner.inventory()
+    }
+
+    var selectedRuntimes: [SimulatorRuntime] {
+        simulators.runtimes.filter { simulatorSelection.contains($0.id) }
+    }
+
+    var selectedDevices: [SimulatorDevice] {
+        simulators.allDevices.filter { simulatorSelection.contains($0.id) }
+    }
+
+    var selectedSimulatorSize: Int64 {
+        selectedRuntimes.reduce(0) { $0 + $1.sizeBytes + $1.devicesSize }
+            + selectedDevices.reduce(0) { $0 + $1.totalSize }
+    }
+
+    func selectSuggestedSimulators() {
+        let suggestion = SimulatorScanner.suggest(simulators)
+        simulatorSelection = suggestion.runtimeIDs.union(suggestion.deviceIDs)
+    }
+
+    func toggleSimulator(_ id: String) {
+        if simulatorSelection.contains(id) { simulatorSelection.remove(id) } else { simulatorSelection.insert(id) }
+    }
+
+    /// Permanent: simctl has no Trash. Devices on a runtime being removed are
+    /// deleted with it, so they are not sent separately.
+    func removeSelectedSimulators(model: AppModel) {
+        let runtimes = selectedRuntimes
+        let runtimeIDs = Set(runtimes.map(\.runtimeIdentifier))
+        let devices = selectedDevices.filter { !runtimeIDs.contains($0.runtimeIdentifier) }
+        guard !runtimes.isEmpty || !devices.isEmpty, !simulatorBusy else { return }
+        simulatorBusy = true
+        simulatorStatus = nil
+        Task {
+            let result = await SimulatorScanner.remove(runtimes: runtimes, devices: devices)
+            var cleaned: [CleanedItem] = []
+            for runtime in result.removedRuntimes {
+                cleaned.append(CleanedItem(
+                    originalPath: "simctl runtime \(runtime.id)", trashPath: nil,
+                    size: runtime.sizeBytes + runtime.devicesSize,
+                    displayName: "Simulator runtime \(runtime.displayName)", category: .developer
+                ))
+            }
+            for device in result.removedDevices {
+                cleaned.append(CleanedItem(
+                    originalPath: device.dataPath, trashPath: nil, size: device.totalSize,
+                    displayName: "Simulator \(device.name) (\(device.runtimeLabel))", category: .developer
+                ))
+            }
+            if !cleaned.isEmpty {
+                let session = CleanSession(date: Date(), source: .devCleaner, items: cleaned, errors: result.errors)
+                await model.history.add(session)
+                await model.refreshHistorySummary()
+            }
+            model.refreshDisk()
+            self.simulatorStatus = result.errors.isEmpty
+                ? "Removed \(result.removedRuntimes.count) runtime(s), \(result.removedDevices.count) device(s) · \(result.freed.sweepBytes)."
+                : "Freed \(result.freed.sweepBytes) · " + result.errors.prefix(2).joined(separator: " · ")
+            await self.scanSimulators()
+            self.simulatorBusy = false
         }
     }
 
@@ -134,11 +212,19 @@ final class DevCleanerModel {
             executable: "/usr/local/bin/docker",
             args: ["system", "prune", "-f"]
         ),
+        DevTool(
+            id: "docker-deep",
+            title: "Docker deep prune",
+            detail: "docker system prune -af — also removes every image not used by a container, plus the build cache. Volumes are kept; images re-pull on next run.",
+            symbol: "shippingbox.fill",
+            executable: "/usr/local/bin/docker",
+            args: ["system", "prune", "-af"]
+        ),
     ]
 
     func toolAvailable(_ tool: DevTool) -> Bool {
         if FileManager.default.isExecutableFile(atPath: tool.executable) { return true }
-        if tool.id == "docker" {
+        if tool.id.hasPrefix("docker") {
             return FileManager.default.isExecutableFile(atPath: "/opt/homebrew/bin/docker")
         }
         return false
@@ -148,7 +234,7 @@ final class DevCleanerModel {
         guard toolOutputs[tool.id]?.running != true else { return }
         toolOutputs[tool.id] = ToolRun(running: true)
         var executable = tool.executable
-        if !FileManager.default.isExecutableFile(atPath: executable), tool.id == "docker" {
+        if !FileManager.default.isExecutableFile(atPath: executable), tool.id.hasPrefix("docker") {
             executable = "/opt/homebrew/bin/docker"
         }
         Task {
@@ -203,6 +289,10 @@ struct DevCleanerView: View {
                 }
 
                 cleanBar
+
+                if !dev.simulators.isEmpty {
+                    simulatorSection
+                }
 
                 toolsSection
             }
@@ -263,6 +353,137 @@ struct DevCleanerView: View {
                 .foregroundStyle(.tertiary)
         }
         .sweepCard()
+    }
+
+    private var simulatorSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Simulators")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("\(dev.simulators.runtimes.count) runtimes · \(dev.simulators.runtimesSize.sweepBytes) · \(dev.simulators.allDevices.count) devices · \(dev.simulators.devicesSize.sweepBytes)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Select suggested") { dev.selectSuggestedSimulators() }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .disabled(dev.simulatorBusy)
+            }
+            if let status = dev.simulatorStatus {
+                StatusPill(text: status, color: Theme.mint)
+            }
+
+            Text("Runtimes")
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.top, 4)
+            ForEach(dev.simulators.runtimes) { runtime in
+                HStack(spacing: 10) {
+                    Toggle("", isOn: Binding(
+                        get: { dev.simulatorSelection.contains(runtime.id) },
+                        set: { _ in dev.toggleSimulator(runtime.id) }
+                    ))
+                    .toggleStyle(.checkbox)
+                    .labelsHidden()
+                    .disabled(!runtime.deletable)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(runtime.displayName)
+                            .font(.system(size: 12, weight: .medium))
+                        Text(runtimeDetail(runtime))
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    if !runtime.isReady {
+                        StatusPill(text: "unusable", color: Theme.amber)
+                    } else if runtime.isNewestForPlatform {
+                        StatusPill(text: "newest \(runtime.platform)", color: Theme.mint)
+                    }
+                    ByteText(bytes: runtime.sizeBytes + runtime.devicesSize, font: .system(size: 11.5, weight: .semibold, design: .rounded))
+                        .frame(width: 70, alignment: .trailing)
+                }
+            }
+
+            let devices = dev.simulators.allDevices.filter { $0.totalSize > 0 }
+            if !devices.isEmpty {
+                Text("Devices")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 6)
+                ForEach(devices) { device in
+                    HStack(spacing: 10) {
+                        Toggle("", isOn: Binding(
+                            get: { dev.simulatorSelection.contains(device.id) },
+                            set: { _ in dev.toggleSimulator(device.id) }
+                        ))
+                        .toggleStyle(.checkbox)
+                        .labelsHidden()
+                        .disabled(device.state == "Booted")
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(device.name)
+                                .font(.system(size: 12, weight: .medium))
+                                .lineLimit(1)
+                            Text(deviceDetail(device))
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        if device.state == "Booted" {
+                            StatusPill(text: "running", color: Theme.coral)
+                        } else if !device.isAvailable {
+                            StatusPill(text: "runtime missing", color: Theme.amber)
+                        }
+                        ByteText(bytes: device.totalSize, font: .system(size: 11.5, weight: .semibold, design: .rounded))
+                            .frame(width: 70, alignment: .trailing)
+                    }
+                }
+            }
+
+            HStack {
+                Text("Removed with xcrun simctl — permanent, not undoable. Removing a runtime also removes its devices; Xcode re-downloads runtimes on demand.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.tertiary)
+                Spacer()
+                if dev.simulatorBusy { ProgressView().controlSize(.small) }
+                Button {
+                    dev.confirmSimulatorRemoval = true
+                } label: {
+                    Label(dev.simulatorSelection.isEmpty ? "Select simulators to remove" : "Remove \(dev.selectedSimulatorSize.sweepBytes)",
+                          systemImage: "trash")
+                }
+                .buttonStyle(HeroButtonStyle())
+                .disabled(dev.simulatorSelection.isEmpty || dev.simulatorBusy)
+            }
+        }
+        .sweepCard()
+        .confirmationDialog(
+            "Remove \(dev.selectedRuntimes.count) runtime(s) and \(dev.selectedDevices.count) device(s)?",
+            isPresented: Binding(get: { dev.confirmSimulatorRemoval }, set: { dev.confirmSimulatorRemoval = $0 })
+        ) {
+            Button("Remove permanently (\(dev.selectedSimulatorSize.sweepBytes))", role: .destructive) {
+                dev.removeSelectedSimulators(model: model)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Simulator runtimes and devices are deleted through simctl and cannot be restored from the Trash. Xcode can download runtimes again from Settings › Components.")
+        }
+    }
+
+    private func runtimeDetail(_ runtime: SimulatorRuntime) -> String {
+        var parts = ["\(runtime.devices.count) device\(runtime.devices.count == 1 ? "" : "s")"]
+        if let booted = runtime.lastBooted {
+            parts.append("last booted \(booted.sweepRelative)")
+        } else {
+            parts.append("never booted")
+        }
+        if !runtime.isReady { parts.append(runtime.state) }
+        return parts.joined(separator: " · ")
+    }
+
+    private func deviceDetail(_ device: SimulatorDevice) -> String {
+        let booted = device.lastBootedAt.map { "last booted \($0.sweepRelative)" } ?? "never booted"
+        return "\(device.runtimeLabel) · \(booted)"
     }
 
     private var itemsSection: some View {
@@ -353,7 +574,7 @@ struct DevCleanerView: View {
                                 .buttonStyle(SecondaryButtonStyle())
                         }
                     }
-                    if tool.id == "docker", let df = dev.dockerDF {
+                    if tool.id.hasPrefix("docker"), let df = dev.dockerDF {
                         Text("Reclaimable now:\n\(df)")
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundStyle(.secondary)

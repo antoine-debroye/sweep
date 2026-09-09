@@ -31,3 +31,29 @@ final class ServiceProvider: NSObject {
         }
     }
 }
+
+// MARK: - Running apps snapshot
+
+/// Bundle ids and display names of running apps, both lowercased, for the
+/// scan engine's running-app guard.
+enum RunningApps {
+    struct Snapshot {
+        let bundleIDs: Set<String>
+        let names: Set<String>
+    }
+
+    @MainActor
+    static func snapshot() -> Snapshot {
+        let apps = NSWorkspace.shared.runningApplications
+        let ids = Set(apps.compactMap { $0.bundleIdentifier?.lowercased() })
+        var names = Set(apps.compactMap { $0.localizedName?.lowercased() })
+        // The bundle's file name is what Application Support folders are
+        // usually named after ("Code" vs localized "Visual Studio Code").
+        for app in apps {
+            if let name = app.bundleURL?.deletingPathExtension().lastPathComponent.lowercased() {
+                names.insert(name)
+            }
+        }
+        return Snapshot(bundleIDs: ids, names: names)
+    }
+}

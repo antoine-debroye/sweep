@@ -57,6 +57,14 @@ public struct SafetyPolicy: Sendable {
             "/Library/Frameworks",
             "/Library/Keychains",
         ]
+        // Cloud sync clients that use the File Provider framework keep the
+        // REAL synced files inside a group container (OneDrive:
+        // ~/Library/Group Containers/<team>.OneDriveSyncClientSuite), not under
+        // ~/Library/CloudStorage — that folder is only the visible mount.
+        // Trashing the backing store would delete the files remotely too, so the
+        // whole container is off-limits, detected by name and by the presence
+        // of a "File Provider Storage" folder.
+        subtrees += SafetyPolicy.fileProviderContainers(home: home)
         self.protectedSubtrees = subtrees.map(SafetyPolicy.canonical)
 
         self.protectedExactNodes = [
@@ -101,6 +109,19 @@ public struct SafetyPolicy: Sendable {
             if path == w || path.hasPrefix(w + "/") { return true }
         }
         return false
+    }
+
+    /// Group containers that hold a cloud sync client's backing store.
+    static func fileProviderContainers(home: URL) -> [String] {
+        let fm = FileManager()
+        let root = home.appending(path: "Library/Group Containers")
+        guard let entries = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return [] }
+        return entries.compactMap { entry in
+            let name = entry.lastPathComponent.lowercased()
+            if name.contains("onedrive") { return entry.path }
+            if fm.fileExists(atPath: entry.appending(path: "File Provider Storage").path) { return entry.path }
+            return nil
+        }
     }
 
     static func canonical(_ path: String) -> String {

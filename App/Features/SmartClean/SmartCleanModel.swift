@@ -26,6 +26,7 @@ final class SmartCleanModel {
     var undoResult: String?
 
     private var scanTask: Task<Void, Never>?
+    private var seenPaths: Set<String> = []
 
     var allItems: [ScanItem] {
         itemsByCategory.values.flatMap { $0 }
@@ -58,13 +59,15 @@ final class SmartCleanModel {
         phase = .scanning
         itemsByCategory = [:]
         selection = []
+        seenPaths = []
         seenCategories = []
         runningTotal = 0
         undoResult = nil
         model.checkFullDiskAccess()
 
-        let running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier?.lowercased() })
-        let engine = ScanEngine(policy: model.policy, whitelist: model.settings.whitelist, runningBundleIDs: running)
+        let running = RunningApps.snapshot()
+        let engine = ScanEngine(policy: model.policy, whitelist: model.settings.whitelist,
+                                runningBundleIDs: running.bundleIDs, runningAppNames: running.names)
         let rules = RuleCatalog.rules()
         let devFolders = model.settings.devFolders.map { URL(fileURLWithPath: $0) }
         let policy = model.policy
@@ -113,6 +116,9 @@ final class SmartCleanModel {
     }
 
     private func ingest(_ item: ScanItem) {
+        // Dynamic rules can overlap (an Electron cache also sits under a
+        // sandbox container); offer each path once.
+        guard seenPaths.insert(item.url.path).inserted else { return }
         itemsByCategory[item.category, default: []].append(item)
         runningTotal += item.size
         if item.tier == .safe {
