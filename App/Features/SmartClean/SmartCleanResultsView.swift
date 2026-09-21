@@ -90,9 +90,25 @@ struct SmartCleanResultsView: View {
                 Divider()
 
                 List {
-                    ForEach(filteredItems(category)) { item in
-                        ItemRow(item: item)
-                            .listRowSeparator(.hidden)
+                    if category == .appLeftovers, search.isEmpty {
+                        let split = clean.groups(in: category)
+                        ForEach(clean.blockedLeftovers) { finding in
+                            BlockedLeftoverRow(finding: finding)
+                                .listRowSeparator(.hidden)
+                        }
+                        ForEach(split.groups) { group in
+                            LeftoverGroupRow(group: group)
+                                .listRowSeparator(.hidden)
+                        }
+                        ForEach(split.ungrouped) { item in
+                            ItemRow(item: item)
+                                .listRowSeparator(.hidden)
+                        }
+                    } else {
+                        ForEach(filteredItems(category)) { item in
+                            ItemRow(item: item)
+                                .listRowSeparator(.hidden)
+                        }
                     }
                 }
                 .listStyle(.inset)
@@ -231,5 +247,81 @@ private struct ItemRow: View {
                 NSPasteboard.general.setString(item.url.path, forType: .string)
             }
         }
+    }
+}
+
+
+// MARK: - Leftover groups
+
+/// One departed app's data, shown as a single collapsible unit: its
+/// Application Support folder plus the caches, preferences and HTTP storage it
+/// scattered elsewhere. The children remain individually selectable, because
+/// cleaning and undo are per-path.
+private struct LeftoverGroupRow: View {
+    @Environment(AppModel.self) private var model
+    let group: SmartCleanModel.ItemGroup
+    @State private var expanded = false
+
+    private var clean: SmartCleanModel { model.smartClean }
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            ForEach(group.items) { item in
+                ItemRow(item: item)
+                    .padding(.leading, 6)
+            }
+        } label: {
+            HStack(spacing: 10) {
+                Toggle("", isOn: Binding(
+                    get: { clean.groupSelectionState(group) == true },
+                    set: { clean.setGroup(group, selected: $0) }
+                ))
+                .toggleStyle(.checkbox)
+                .labelsHidden()
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(group.title)
+                        .font(.system(size: 12.5, weight: .semibold))
+                    Text(group.items.count == 1
+                         ? "1 location"
+                         : "\(group.items.count) locations")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                SafetyBadge(tier: group.items.first?.tier ?? .review)
+                ByteText(bytes: group.size, font: .system(size: 12, weight: .semibold, design: .rounded))
+                    .frame(width: 74, alignment: .trailing)
+            }
+            .padding(.vertical, 3)
+        }
+    }
+}
+
+/// A leftover Sweep found but refuses to offer: something is still executing
+/// from inside it, so the user has to stop that first.
+private struct BlockedLeftoverRow: View {
+    let finding: LaunchItemFinding
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(finding.label)
+                    .font(.system(size: 12.5, weight: .medium))
+                Text(finding.reason)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer()
+            Button("Reveal") {
+                NSWorkspace.shared.activateFileViewerSelecting([finding.url])
+            }
+            .buttonStyle(SecondaryButtonStyle())
+            .controlSize(.small)
+        }
+        .padding(.vertical, 3)
     }
 }

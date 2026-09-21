@@ -162,6 +162,29 @@ private final class OutputBox: @unchecked Sendable {
 }
 
 public enum ProcessRunner {
+    /// Runs an executable with a wall-clock limit, capturing output. A child
+    /// that outlives `timeout` is terminated and reported as status 124 (the
+    /// same convention `timeout(1)` uses), so callers can tell "it said no"
+    /// from "it never answered" — a distinction that matters when the answer
+    /// authorizes a deletion.
+    public static func run(
+        _ path: String, _ args: [String], timeout: TimeInterval
+    ) async -> ProcessResult {
+        await withTaskGroup(of: ProcessResult?.self) { group in
+            group.addTask { await run(path, args) }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(timeout))
+                return nil
+            }
+            for await result in group {
+                group.cancelAll()
+                if let result { return result }
+                return ProcessResult(status: 124, stdout: "", stderr: "timed out after \(timeout)s")
+            }
+            return ProcessResult(status: 124, stdout: "", stderr: "timed out")
+        }
+    }
+
     /// Runs an executable with arguments, capturing output. Never a shell.
     public static func run(_ path: String, _ args: [String]) async -> ProcessResult {
         await withCheckedContinuation { continuation in

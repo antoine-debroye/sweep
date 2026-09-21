@@ -40,6 +40,10 @@ enum RunningApps {
     struct Snapshot {
         let bundleIDs: Set<String>
         let names: Set<String>
+        /// Absolute executable paths of every process we can see. Needed
+        /// because a leftover folder can still host a live background agent
+        /// that `runningApplications` does not report.
+        let executablePaths: Set<String>
     }
 
     @MainActor
@@ -54,6 +58,8 @@ enum RunningApps {
                 names.insert(name)
             }
         }
-        return Snapshot(bundleIDs: ids, names: names)
+        let executables = RunningProcesses.executablePaths()
+            .union(apps.compactMap(\.executableURL?.path))
+        return Snapshot(bundleIDs: ids, names: names, executablePaths: executables)
     }
 }

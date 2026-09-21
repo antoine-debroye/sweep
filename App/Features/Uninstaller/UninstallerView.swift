@@ -112,16 +112,14 @@ final class UninstallerModel {
 
     func uninstall(model: AppModel) {
         guard let app = selected, !uninstalling else { return }
-        guard !app.isApple else {
-            statusMessage = "Apple apps are protected by macOS and can't be uninstalled."
-            return
-        }
         guard !isRunning(app) else {
             statusMessage = "\(app.name) is running. Quit it first, then try again."
             return
         }
-        guard UninstallGuard.mayRemoveAppBundle(app.url) else {
-            statusMessage = "Refusing to remove anything that isn't an app in an Applications folder."
+        // Identity-level refusal (security agents, platform dependencies) on
+        // top of the path-level check.
+        if let reason = UninstallGuard.verdict(for: app).reason {
+            statusMessage = reason
             return
         }
         uninstalling = true
@@ -172,17 +170,46 @@ final class UninstallerModel {
         scanningOrphans = true
         orphans = []
         orphanSelection = []
+        blocked = []
+        launchItems = []
         Task {
-            let installed = await AppInventory.scan()
-            let installedIDs = Set(installed.map(\.bundleID))
-            let runningIDs = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
+            let running = RunningApps.snapshot()
+            // Nested so that suite installs (/Applications/Adobe Acrobat DC/…,
+            // /Applications/Utilities/…) count as installed and their data is
+            // never mistaken for a leftover.
+            let installed = await AppInventory.scanNested()
+            let index = InstalledAppIndex.live(
+                apps: installed,
+                runningBundleIDs: running.bundleIDs,
+                runningAppNames: running.names,
+                runningExecutablePaths: running.executablePaths
+            )
             let found = await Task.detached(priority: .userInitiated) {
-                OrphanScanner.scan(installedBundleIDs: installedIDs, runningBundleIDs: runningIDs)
+                (OrphanScanner.scanDetailed(index: index), LaunchItemAudit.audit(index: index))
             }.value
-            self.orphans = found
+            self.orphans = found.0.items
+            self.blocked = found.0.blocked
+            self.launchItems = found.1
             self.scanningOrphans = false
         }
     }
+
+    /// Items grouped by departed app for display. Selection stays per-path.
+    var orphanGroups: (groups: [(id: String, items: [ScanItem])], ungrouped: [ScanItem]) {
+        let grouped = Dictionary(grouping: orphans.filter { $0.group != nil }) { $0.group! }
+        let groups = grouped
+            .map { (id: $0.key, items: $0.value.sorted { $0.size > $1.size }) }
+            .sorted { lhs, rhs in
+                lhs.items.reduce(Int64(0)) { $0 + $1.size } > rhs.items.reduce(Int64(0)) { $0 + $1.size }
+            }
+        return (groups, orphans.filter { $0.group == nil })
+    }
+
+    /// Leftovers found but not offered: something is running out of them.
+    var blocked: [LaunchItemFinding] = []
+    /// Orphaned launch items and privileged helpers. Reported only — Sweep does
+    /// not unload jobs, delete root-owned helpers or rewrite receipts.
+    var launchItems: [LaunchItemFinding] = []
 
     func cleanOrphans(model: AppModel) {
         let items = orphans.filter { orphanSelection.contains($0.id) }
@@ -363,6 +390,10 @@ struct UninstallerView: View {
                 .listStyle(.inset)
                 .scrollContentBackground(.hidden)
 
+                if let handoff = VendorUninstaller.handoff(for: app) {
+                    VendorHandoffBanner(handoff: handoff)
+                }
+
                 HStack {
                     Spacer()
                     Button {
@@ -376,7 +407,7 @@ struct UninstallerView: View {
                         }
                     }
                     .buttonStyle(HeroButtonStyle())
-                    .disabled(uninstaller.uninstalling || app.isApple)
+                    .disabled(uninstaller.uninstalling || !UninstallGuard.verdict(for: app).isAllowed)
                     .confirmationDialog(
                         "Uninstall \(app.name)?",
                         isPresented: $confirmingUninstall
@@ -423,30 +454,22 @@ struct UninstallerView: View {
                 Spacer()
             } else {
                 List {
-                    ForEach(uninstaller.orphans) { item in
-                        HStack(spacing: 8) {
-                            Toggle("", isOn: Binding(
-                                get: { uninstaller.orphanSelection.contains(item.id) },
-                                set: { on in
-                                    if on { uninstaller.orphanSelection.insert(item.id) }
-                                    else { uninstaller.orphanSelection.remove(item.id) }
-                                }
-                            ))
-                            .toggleStyle(.checkbox)
-                            .labelsHidden()
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(item.displayName)
-                                    .font(.system(size: 12, weight: .medium))
-                                Text(item.detail + " · " + item.url.path)
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
+                    let split = uninstaller.orphanGroups
+                    ForEach(split.groups, id: \.id) { group in
+                        OrphanGroupRow(groupID: group.id, items: group.items)
+                            .listRowSeparator(.hidden)
+                    }
+                    ForEach(split.ungrouped) { item in
+                        OrphanItemRow(item: item)
+                            .listRowSeparator(.hidden)
+                    }
+                    if !uninstaller.blocked.isEmpty || !uninstaller.launchItems.isEmpty {
+                        Section("Needs your attention — Sweep won't touch these") {
+                            ForEach(uninstaller.blocked + uninstaller.launchItems) { finding in
+                                FindingRow(finding: finding)
+                                    .listRowSeparator(.hidden)
                             }
-                            Spacer()
-                            SafetyBadge(tier: item.tier)
-                            ByteText(bytes: item.size, font: .system(size: 11.5, weight: .semibold, design: .rounded))
                         }
-                        .listRowSeparator(.hidden)
                     }
                 }
                 .listStyle(.inset)
@@ -458,7 +481,11 @@ struct UninstallerView: View {
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button("Select All") {
-                        uninstaller.orphanSelection = Set(uninstaller.orphans.map(\.id))
+                        // Review-tier rows are heuristic; the user opts into
+                        // those one at a time rather than in bulk.
+                        uninstaller.orphanSelection = Set(
+                            uninstaller.orphans.filter { $0.tier != .review }.map(\.id)
+                        )
                     }
                     .buttonStyle(SecondaryButtonStyle())
                     Button {
@@ -512,5 +539,174 @@ struct AppIconView: View {
         Image(nsImage: NSWorkspace.shared.icon(forFile: url.path))
             .resizable()
             .frame(width: size, height: size)
+    }
+}
+
+
+// MARK: - Leftover rows
+
+/// One departed app's data as a single collapsible unit. The children stay
+/// individually selectable because cleaning and undo are per-path.
+private struct OrphanGroupRow: View {
+    @Environment(AppModel.self) private var model
+    let groupID: String
+    let items: [ScanItem]
+    @State private var expanded = false
+
+    private var uninstaller: UninstallerModel { model.uninstaller }
+    private var size: Int64 { items.reduce(0) { $0 + $1.size } }
+    private var allSelected: Bool {
+        items.allSatisfy { uninstaller.orphanSelection.contains($0.id) }
+    }
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            ForEach(items) { item in
+                OrphanItemRow(item: item).padding(.leading, 6)
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Toggle("", isOn: Binding(
+                    get: { allSelected },
+                    set: { on in
+                        for item in items {
+                            if on { uninstaller.orphanSelection.insert(item.id) }
+                            else { uninstaller.orphanSelection.remove(item.id) }
+                        }
+                    }
+                ))
+                .toggleStyle(.checkbox)
+                .labelsHidden()
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(items.first?.group?.capitalized ?? groupID)
+                        .font(.system(size: 12, weight: .semibold))
+                    Text(items.count == 1 ? "1 location" : "\(items.count) locations")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                SafetyBadge(tier: items.first?.tier ?? .review)
+                ByteText(bytes: size, font: .system(size: 11.5, weight: .semibold, design: .rounded))
+            }
+        }
+    }
+}
+
+private struct OrphanItemRow: View {
+    @Environment(AppModel.self) private var model
+    let item: ScanItem
+
+    private var uninstaller: UninstallerModel { model.uninstaller }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Toggle("", isOn: Binding(
+                get: { uninstaller.orphanSelection.contains(item.id) },
+                set: { on in
+                    if on { uninstaller.orphanSelection.insert(item.id) }
+                    else { uninstaller.orphanSelection.remove(item.id) }
+                }
+            ))
+            .toggleStyle(.checkbox)
+            .labelsHidden()
+            VStack(alignment: .leading, spacing: 1) {
+                Text(item.displayName)
+                    .font(.system(size: 12, weight: .medium))
+                Text(item.detail + " · " + item.url.path)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            SafetyBadge(tier: item.tier)
+            ByteText(bytes: item.size, font: .system(size: 11.5, weight: .semibold, design: .rounded))
+        }
+        .contextMenu {
+            Button("Reveal in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([item.url])
+            }
+        }
+    }
+}
+
+/// Read-only finding: a leftover blocked by a live process, an orphaned launch
+/// item, or an orphaned privileged helper. Deliberately has no delete action —
+/// unloading launchd jobs and removing root-owned helpers needs the user.
+private struct FindingRow: View {
+    let finding: LaunchItemFinding
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("\(finding.kind.label): \(finding.label)")
+                    .font(.system(size: 12, weight: .medium))
+                Text(finding.reason)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer()
+            Button("Reveal") {
+                NSWorkspace.shared.activateFileViewerSelecting([finding.url])
+            }
+            .buttonStyle(SecondaryButtonStyle())
+            .controlSize(.small)
+        }
+    }
+}
+
+
+// MARK: - Vendor uninstaller hand-off
+
+/// Shown when deleting the app bundle is the wrong way to remove this app.
+///
+/// Suites like Adobe spread themselves across several Applications folders,
+/// `/Library/Application Support` and a set of launch items and privileged
+/// helpers, most of which Sweep cannot reach. Pointing at the vendor's own
+/// uninstaller removes all of it, which is a better outcome than Sweep
+/// deleting the one part it can see.
+private struct VendorHandoffBanner: View {
+    let handoff: UninstallHandoff
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "info.circle.fill")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            if case .vendorTool(let url, let label) = handoff {
+                Button(label) { NSWorkspace.shared.open(url) }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .controlSize(.small)
+            }
+        }
+        .padding(10)
+        .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private var title: String {
+        switch handoff {
+        case .vendorTool: "This app ships its own uninstaller"
+        case .managedByVendor(let vendor, _): "\(vendor) has to remove this"
+        }
+    }
+
+    private var detail: String {
+        switch handoff {
+        case .vendorTool(let url, _):
+            "Using \(url.deletingPathExtension().lastPathComponent) also removes the shared components and "
+                + "daemons that live outside this app bundle, which Sweep cannot reach."
+        case .managedByVendor(_, let guidance):
+            guidance
+        }
     }
 }

@@ -210,14 +210,87 @@ public enum LeftoverFinder {
 
 // MARK: - Orphan scanner
 
-/// Finds data left behind by apps that are no longer installed. Deliberately
-/// conservative: only flags entries whose name is a reverse-DNS bundle id,
-/// never Apple ids, never ids of installed or running apps.
+/// Finds data left behind by apps that are no longer installed.
+///
+/// Three passes, deliberately ordered from most to least certain:
+///  1. **Reverse-DNS residue** — entries literally named `com.vendor.app`.
+///  2. **Name-style folders** (`AppResidueScanner`) — "Figma", the way Electron
+///     and many native apps actually name their data.
+///  3. **Stale subfolders inside a live vendor folder** — "Adobe/AcroCef".
+///
+/// Everything emitted is `.review`: surfaced, never pre-selected, never
+/// auto-trimmed.
 public enum OrphanScanner {
+
+    public struct Result: Sendable {
+        public let items: [ScanItem]
+        /// Leftovers that were found but cannot be cleaned yet, because a
+        /// process is still executing from inside them.
+        public let blocked: [LaunchItemFinding]
+
+        public init(items: [ScanItem], blocked: [LaunchItemFinding]) {
+            self.items = items
+            self.blocked = blocked
+        }
+    }
+
+    /// Primary entry point. `index` carries everything known about installed and
+    /// running apps, including an injectable LaunchServices lookup, so the whole
+    /// scan is a pure function of its inputs and testable against a fixture home.
+    public static func scanDetailed(
+        home: URL = FileManager.default.homeDirectoryForCurrentUser,
+        index: InstalledAppIndex,
+        policy: SafetyPolicy? = nil,
+        includeNameStyleFolders: Bool = true
+    ) -> Result {
+        let policy = policy ?? SafetyPolicy(home: home)
+        let residue = ResidueIndex.build(home: home)
+
+        var output = AppResidueScanner.Output()
+        if includeNameStyleFolders {
+            output = AppResidueScanner.scan(home: home, index: index, residue: residue, policy: policy)
+        }
+        // Paths a cluster already offers must not be offered a second time by
+        // the reverse-DNS pass — the tests assert every path appears once.
+        let claimed = Set(output.items.map { SafetyPolicy.canonical($0.url.path) })
+        let extra = reverseDNSItems(
+            home: home, index: index, policy: policy, residue: residue, claiming: claimed
+        )
+        return Result(
+            items: (output.items + extra).sorted { $0.size > $1.size },
+            blocked: output.blocked
+        )
+    }
+
+    public static func scan(
+        home: URL = FileManager.default.homeDirectoryForCurrentUser,
+        index: InstalledAppIndex,
+        policy: SafetyPolicy? = nil,
+        includeNameStyleFolders: Bool = true
+    ) -> [ScanItem] {
+        scanDetailed(home: home, index: index, policy: policy,
+                     includeNameStyleFolders: includeNameStyleFolders).items
+    }
+
+    /// Kept for callers (and tests) that only have the two id sets. Runs the
+    /// reverse-DNS pass alone.
     public static func scan(
         home: URL = FileManager.default.homeDirectoryForCurrentUser,
         installedBundleIDs: Set<String>,
         runningBundleIDs: Set<String>
+    ) -> [ScanItem] {
+        let index = InstalledAppIndex(bundleIDs: installedBundleIDs, runningBundleIDs: runningBundleIDs)
+        return scan(home: home, index: index, includeNameStyleFolders: false)
+    }
+
+    /// Pass 1. Only flags entries whose name is a reverse-DNS bundle id, never
+    /// Apple ids, never ids of installed or running apps.
+    static func reverseDNSItems(
+        home: URL,
+        index: InstalledAppIndex,
+        policy: SafetyPolicy,
+        residue: ResidueIndex,
+        claiming claimed: Set<String>
     ) -> [ScanItem] {
         let fm = FileManager()
         let lib = home.appending(path: "Library")
@@ -237,7 +310,7 @@ public enum OrphanScanner {
         // exact-id check alone would flag them as orphans and let the user trash
         // live data. Skipping the whole vendor prefix is the safe, conservative
         // choice for a delete tool.
-        let activeVendors = Set((installedBundleIDs.union(runningBundleIDs)).compactMap(vendorPrefix))
+        let activeVendors = Set((index.bundleIDs.union(index.runningBundleIDs)).compactMap(vendorPrefix))
 
         var items: [ScanItem] = []
         for (root, isPreferences) in roots {
@@ -250,13 +323,36 @@ public enum OrphanScanner {
                     name = String(name.dropLast(6))
                 }
                 if name.hasSuffix(".savedState") { name = String(name.dropLast(11)) }
+                let lowered = name.lowercased()
+                // App-group entries are named "group.<bundle id>". Without
+                // stripping that prefix the vendor is read as "group.com", so
+                // an installed app's group preferences look orphaned — e.g.
+                // group.com.nordvpn.macos.firebase while NordVPN is installed.
+                let identity = lowered.hasPrefix("group.") ? String(lowered.dropFirst(6)) : lowered
 
                 guard looksLikeBundleID(name),
-                      !name.hasPrefix("com.apple."),
-                      !installedBundleIDs.contains(name),
-                      !runningBundleIDs.contains(name),
-                      !(vendorPrefix(name).map { activeVendors.contains($0) } ?? false),
-                      appURL(forBundleID: name) == nil else { continue }
+                      !identity.hasPrefix("com.apple."),
+                      !index.bundleIDs.contains(identity),
+                      !index.runningBundleIDs.contains(identity),
+                      !(vendorPrefix(identity).map { activeVendors.contains($0) } ?? false),
+                      // The vendor prefix alone misses publishers whose bundle
+                      // id doesn't match their app name: Dropbox ships as
+                      // com.getdropbox.dropbox, so its own updater
+                      // (com.dropbox.DropboxMacUpdate) reads as orphaned. Match
+                      // the vendor component against installed app names too.
+                      !(ResidueIndex.vendorToken(identity).map { index.appTokens.contains($0) } ?? false),
+                      !claimed.contains(SafetyPolicy.canonical(entry.path)),
+                      !policy.isProtected(entry),
+                      // A launchd job's own preferences and data. It has no
+                      // .app bundle, so it looks orphaned while being live.
+                      !residue.isLiveLaunchLabel(identity),
+                      !BundleProtection.isDataSensitive(identity),
+                      !residue.isReferencedByLaunchItem(entry),
+                      // An app that stages a copy of itself inside the user's
+                      // Library still resolves through LaunchServices; that is
+                      // not an installation. See AppResidueScanner.
+                      !AppResidueScanner.isInstalledElsewhere(identity, home: home, candidate: nil, index: index)
+                else { continue }
 
                 let stats = DirectorySizer.stats(of: entry)
                 guard stats.size > 0 else { continue }
@@ -270,11 +366,13 @@ public enum OrphanScanner {
                     fileCount: stats.fileCount,
                     newestModification: stats.newestModification,
                     tier: .review,
-                    domain: .user
+                    domain: .user,
+                    group: ResidueIndex.vendorToken(identity),
+                    identity: FileIdentity.current(of: entry)
                 ))
             }
         }
-        return items.sorted { $0.size > $1.size }
+        return items
     }
 
     static func looksLikeBundleID(_ name: String) -> Bool {

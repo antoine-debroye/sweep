@@ -229,6 +229,15 @@ public struct ScanItem: Sendable, Identifiable, Hashable {
     public let tier: SafetyTier
     public let domain: RuleDomain
     public let forcePermanent: Bool
+    /// Display-only cluster key. Items that belong to the same uninstalled app
+    /// (its Application Support folder, caches, preferences, …) share one key so
+    /// the UI can show them as a single collapsible unit. `nil` everywhere else.
+    /// Selection and cleaning stay strictly per-path — `id` is unaffected.
+    public let group: String?
+    /// Identity of the object as scanned. `Cleaner` refuses to delete a path
+    /// whose identity no longer matches, so a rename-and-recreate between the
+    /// scan and the click cannot redirect the deletion onto something new.
+    public let identity: FileIdentity?
 
     public init(
         ruleID: String,
@@ -241,7 +250,9 @@ public struct ScanItem: Sendable, Identifiable, Hashable {
         newestModification: Date?,
         tier: SafetyTier,
         domain: RuleDomain,
-        forcePermanent: Bool = false
+        forcePermanent: Bool = false,
+        group: String? = nil,
+        identity: FileIdentity? = nil
     ) {
         self.id = ruleID + "|" + url.path
         self.ruleID = ruleID
@@ -255,6 +266,8 @@ public struct ScanItem: Sendable, Identifiable, Hashable {
         self.tier = tier
         self.domain = domain
         self.forcePermanent = forcePermanent
+        self.group = group
+        self.identity = identity
     }
 
     public func hash(into hasher: inout Hasher) { hasher.combine(id) }
