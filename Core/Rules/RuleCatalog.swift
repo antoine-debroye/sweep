@@ -123,11 +123,29 @@ public enum RuleCatalog {
             id: "incomplete-downloads",
             category: .systemJunk,
             title: "Incomplete downloads",
-            detail: "Partial browser downloads (.download, .crdownload, .part) abandoned for 3+ days.",
+            detail: "Partial downloads (.download, .crdownload, .part) abandoned for 7+ days. Review — a transfer may still be resuming.",
             paths: [home.appending(path: "Downloads")],
-            extensions: ["download", "crdownload", "part"],
-            minAgeDays: 3,
-            tier: .safe
+            extensions: ["download", "crdownload", "part", "incomplete"],
+            minAgeDays: 7,
+            // Deliberately NOT .safe. A partial download is the one kind of
+            // junk that can still be live: age says nothing about whether a
+            // transfer is resuming into it. `.review` keeps it out of
+            // pre-selection and out of unattended auto-trim, and `Cleaner`
+            // additionally refuses it unless a handle probe says it is idle.
+            tier: .review
+        ))
+        // Homebrew stages cask downloads as "<sha>--<name>.incomplete" and a
+        // running `brew fetch` holds them open.
+        rules.append(CleaningRule(
+            id: "incomplete-brew-downloads",
+            category: .developer,
+            title: "Incomplete Homebrew downloads",
+            detail: "Partial cask/bottle downloads abandoned for 7+ days. Review — a fetch may still hold them.",
+            paths: [lib.appending(path: "Caches/Homebrew/downloads")],
+            filesOnly: true,
+            extensions: ["incomplete"],
+            minAgeDays: 7,
+            tier: .review
         ))
         if let tmpDir = ProcessInfo.processInfo.environment["TMPDIR"], !tmpDir.isEmpty {
             rules.append(CleaningRule(

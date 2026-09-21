@@ -24,6 +24,9 @@ final class SmartCleanModel {
     var cleanProgress: CleanProgress?
     var lastSession: CleanSession?
     var undoResult: String?
+    /// Leftovers that were found but can't be cleaned yet because something is
+    /// still running out of them.
+    var blockedLeftovers: [LaunchItemFinding] = []
 
     private var scanTask: Task<Void, Never>?
     private var seenPaths: Set<String> = []
@@ -52,6 +55,44 @@ final class SmartCleanModel {
         items(in: category).filter { selection.contains($0.id) }.reduce(0) { $0 + $1.size }
     }
 
+    // MARK: - Groups
+    //
+    // Several paths can belong to one departed app (its Application Support
+    // folder, caches, preferences, HTTP storage…). They stay separate
+    // `ScanItem`s — selection, cleaning and undo are all per-path — and are only
+    // *displayed* together, keyed on `ScanItem.group`.
+
+    struct ItemGroup: Identifiable {
+        let id: String
+        let items: [ScanItem]
+        var size: Int64 { items.reduce(0) { $0 + $1.size } }
+        var title: String { items.first?.group?.capitalized ?? id }
+    }
+
+    /// Grouped items first (largest group first), then everything ungrouped.
+    func groups(in category: CleanCategory) -> (groups: [ItemGroup], ungrouped: [ScanItem]) {
+        let all = items(in: category)
+        let grouped = Dictionary(grouping: all.filter { $0.group != nil }) { $0.group! }
+        let groups = grouped
+            .map { ItemGroup(id: $0.key, items: $0.value.sorted { $0.size > $1.size }) }
+            .sorted { $0.size > $1.size }
+        return (groups, all.filter { $0.group == nil })
+    }
+
+    /// nil when partially selected, for a tri-state checkbox.
+    func groupSelectionState(_ group: ItemGroup) -> Bool? {
+        let selected = group.items.filter { selection.contains($0.id) }.count
+        if selected == 0 { return false }
+        if selected == group.items.count { return true }
+        return nil
+    }
+
+    func setGroup(_ group: ItemGroup, selected: Bool) {
+        for item in group.items {
+            if selected { selection.insert(item.id) } else { selection.remove(item.id) }
+        }
+    }
+
     // MARK: - Scan
 
     func startScan(model: AppModel) {
@@ -63,6 +104,7 @@ final class SmartCleanModel {
         seenCategories = []
         runningTotal = 0
         undoResult = nil
+        blockedLeftovers = []
         model.checkFullDiskAccess()
 
         let running = RunningApps.snapshot()
@@ -96,18 +138,28 @@ final class SmartCleanModel {
             self.seenCategories.insert(.appLeftovers)
             self.seenCategories.insert(.projectArtifacts)
 
-            let installed = await AppInventory.scan()
-            let installedIDs = Set(installed.map(\.bundleID))
-            let runningIDs = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
+            // A nested inventory (depth 2+, including /Applications/Utilities)
+            // is what stops a suite install such as
+            // /Applications/Adobe Acrobat DC/Acrobat Distiller.app from being
+            // mistaken for uninstalled — the flat scan misses those entirely.
+            let installed = await AppInventory.scanNested()
+            let index = InstalledAppIndex.live(
+                apps: installed,
+                runningBundleIDs: running.bundleIDs,
+                runningAppNames: running.names,
+                runningExecutablePaths: running.executablePaths
+            )
 
-            let extraItems = await Task.detached(priority: .userInitiated) { () -> [ScanItem] in
-                var extras = OrphanScanner.scan(installedBundleIDs: installedIDs, runningBundleIDs: runningIDs)
-                extras += ProjectArtifactScanner.scan(devFolders: devFolders, minAgeDays: 30, policy: policy)
-                return extras
+            let extras = await Task.detached(priority: .userInitiated) { () -> (OrphanScanner.Result, [ScanItem]) in
+                let leftovers = OrphanScanner.scanDetailed(index: index, policy: policy)
+                let artifacts = ProjectArtifactScanner.scan(devFolders: devFolders, minAgeDays: 30, policy: policy)
+                return (leftovers, artifacts)
             }.value
 
             guard !Task.isCancelled else { return }
-            for item in extraItems { self.ingest(item) }
+            self.blockedLeftovers = extras.0.blocked
+            for item in extras.0.items { self.ingest(item) }
+            for item in extras.1 { self.ingest(item) }
             self.activeCategories.remove(.appLeftovers)
             self.activeCategories.remove(.projectArtifacts)
 
@@ -191,12 +243,16 @@ final class SmartCleanModel {
             model.refreshDisk()
             await model.refreshHistorySummary()
             if model.settings.notificationsEnabled, session.totalFreed > 0 {
+                // "Freed" is only true once the Trash is emptied; until then
+                // the bytes are still on disk and the free-space figure has
+                // not moved. Say what actually happened.
+                let verb = model.settings.permanentDelete ? "Deleted" : "Moved"
                 let tail = model.settings.permanentDelete
                     ? "Permanent delete is on, so this can't be undone."
-                    : "Everything is in the Trash — undo any time from History."
+                    : "It's in the Trash — undo any time from History, or empty the Trash to reclaim the space."
                 Notifier.post(
                     title: "Sweep finished",
-                    body: "Freed \(session.totalFreed.sweepBytes). \(tail)"
+                    body: "\(verb) \(session.totalFreed.sweepBytes). \(tail)"
                 )
             }
         }

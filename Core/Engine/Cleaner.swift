@@ -46,19 +46,45 @@ public struct Cleaner: Sendable {
     public let trashRemover: FileRemover
     public let permanentRemover: FileRemover
     public let privileged: PrivilegedRemoving?
+    public let liveness: FileLiveness
 
     public init(
         policy: SafetyPolicy,
         whitelist: [String] = [],
         trashRemover: FileRemover = TrashRemover(),
         permanentRemover: FileRemover = PermanentRemover(),
-        privileged: PrivilegedRemoving? = nil
+        privileged: PrivilegedRemoving? = nil,
+        liveness: FileLiveness = FileLiveness()
     ) {
         self.policy = policy
         self.whitelist = whitelist
         self.trashRemover = trashRemover
         self.permanentRemover = permanentRemover
         self.privileged = privileged
+        self.liveness = liveness
+    }
+
+    /// Rules whose targets are, by their nature, things a process may be
+    /// actively writing — so an inconclusive liveness probe must keep them
+    /// rather than wave them through.
+    ///
+    /// `incomplete-downloads` is the case that proves it: a `.crdownload` or
+    /// `<sha>--<name>.incomplete` older than the age gate can still belong to a
+    /// transfer that is resuming right now, and deleting it loses the transfer.
+    static let rulesRequiringConclusiveIdle: Set<String> = [
+        "incomplete-downloads", "incomplete-brew-downloads", "codex-incomplete-runtimes",
+        "user-temp", "darwin-user-caches",
+    ]
+
+    static func requiresConclusiveIdle(_ item: ScanItem) -> Bool {
+        if rulesRequiringConclusiveIdle.contains(item.ruleID) { return true }
+        let name = item.url.lastPathComponent.lowercased()
+        if ["download", "crdownload", "part", "partial", "incomplete", "tmp"]
+            .contains(item.url.pathExtension.lowercased()) { return true }
+        // A live SQLite database is the other classic: the -shm is only present
+        // while a connection is open.
+        return name.hasSuffix(".sqlite") || name.hasSuffix(".db")
+            || name.hasSuffix("-wal") || name.hasSuffix("-shm") || name.hasSuffix(".vscdb")
     }
 
     /// True only when the URL is inside a real Trash directory: the user's
@@ -85,6 +111,11 @@ public struct Cleaner: Sendable {
         let total = items.count
         var completed = 0
 
+        // One batched probe for the whole run: which of these is a process
+        // holding open right now? Deleting data out from under a live process
+        // is not a clean-up, and no age gate can tell you this.
+        let verdicts = await liveness.verdicts(for: userItems.map(\.url))
+
         for item in userItems {
             guard !Task.isCancelled else { break }
             guard !policy.isProtected(item.url) else {
@@ -103,6 +134,33 @@ public struct Cleaner: Sendable {
             // Trash" would just shuffle them around. Anchor the check to the
             // real Trash locations so an unrelated path that merely contains
             // ".trash" isn't silently force-deleted.
+            switch verdicts[item.url.path] {
+            case .inUse(let command):
+                let blocker = command.map { " (\($0))" } ?? ""
+                errors.append("Skipped, still in use\(blocker): \(item.url.path)")
+                continue
+            case .unknown(let reason) where Cleaner.requiresConclusiveIdle(item):
+                errors.append("Skipped, could not confirm it is idle (\(reason)): \(item.url.path)")
+                continue
+            default:
+                break
+            }
+
+            // Re-bind identity immediately before removal. The item was
+            // measured during the scan, possibly minutes ago; if the path now
+            // points at a different object it was renamed and recreated in
+            // between, and the user never reviewed this one.
+            if let scanned = item.identity {
+                guard let now = FileIdentity.current(of: item.url) else {
+                    errors.append("Skipped, no longer exists: \(item.url.path)")
+                    continue
+                }
+                guard now == scanned else {
+                    errors.append("Skipped, changed since the scan: \(item.url.path)")
+                    continue
+                }
+            }
+
             let inTrash = Cleaner.isInTrash(item.url)
             let usePermanent = permanentDelete || item.forcePermanent || inTrash
             let remover = usePermanent ? permanentRemover : trashRemover

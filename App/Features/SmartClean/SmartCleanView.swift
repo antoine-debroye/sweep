@@ -169,7 +169,7 @@ struct SmartCleanView: View {
             Text("All clean")
                 .font(.system(size: 28, weight: .bold, design: .rounded))
             if let session = clean.lastSession {
-                Text("Freed \(session.totalFreed.sweepBytes) · \(session.items.count) items")
+                Text("\(model.settings.permanentDelete ? "Deleted" : "Moved to the Trash"): \(session.totalFreed.sweepBytes) · \(session.items.count) items")
                     .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(.secondary)
                 if !session.errors.isEmpty {

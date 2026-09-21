@@ -166,7 +166,8 @@ public struct ScanEngine: Sendable {
             newestModification: stats.newestModification,
             tier: rule.tier,
             domain: rule.domain,
-            forcePermanent: rule.forcePermanent
+            forcePermanent: rule.forcePermanent,
+            identity: FileIdentity.current(of: url)
         )
     }
 

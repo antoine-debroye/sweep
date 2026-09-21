@@ -134,7 +134,39 @@ public struct SafetyPolicy: Sendable {
 /// Validation for the explicit uninstall flow: the only things it may remove
 /// are an .app bundle inside an Applications folder, or leftover entries the
 /// finder located inside the known per-app data roots.
+/// Why an uninstall was refused, or that it may proceed.
+public enum UninstallVerdict: Sendable, Equatable {
+    case allowed
+    case refused(String)
+
+    public var isAllowed: Bool { self == .allowed }
+    public var reason: String? {
+        if case .refused(let reason) = self { return reason }
+        return nil
+    }
+}
+
 public enum UninstallGuard {
+    /// Identity-level check, on top of the path-level `mayRemoveAppBundle`.
+    /// Deleting a security agent's bundle strands its system extension and
+    /// daemons and can break a managed Mac's compliance, so Sweep refuses and
+    /// points at the vendor's tooling instead.
+    public static func verdict(for app: InstalledApp) -> UninstallVerdict {
+        if app.isApple || BundleProtection.isSystemCritical(app.bundleID) {
+            return .refused("\(app.name) is part of the system or a platform dependency. "
+                + "Sweep won't remove it.")
+        }
+        if BundleProtection.isSecurityAgent(app.bundleID) {
+            return .refused("\(app.name) is a security or device-management agent. Remove it through "
+                + "the vendor's uninstaller or your MDM — deleting it here would leave its system "
+                + "extension and daemons running.")
+        }
+        guard mayRemoveAppBundle(app.url) else {
+            return .refused("Sweep only removes apps that live directly in an Applications folder.")
+        }
+        return .allowed
+    }
+
     public static func mayRemoveAppBundle(_ url: URL) -> Bool {
         guard url.pathExtension == "app" else { return false }
         let parent = SafetyPolicy.canonical(url.deletingLastPathComponent().path)
