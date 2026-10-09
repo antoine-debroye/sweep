@@ -11,6 +11,9 @@ final class OptimizeModel {
     }
 
     var states: [String: ActionState] = [:]
+    /// An action waiting on the user because running it now has a cost they
+    /// should weigh (e.g. a DNS flush while a VPN is up).
+    var pendingConfirmation: (action: OptimizeAction, message: String)?
 
     enum Kind {
         case maintenance(MaintenanceTask)
@@ -60,17 +63,9 @@ final class OptimizeModel {
             needsAdmin: true,
             kind: .maintenance(.thinLocalSnapshots)
         ),
-        OptimizeAction(
-            id: "launchservices",
-            title: "Rebuild Launch Services",
-            detail: "Fixes duplicate \"Open With\" menu entries.",
-            symbol: "menucard",
-            needsAdmin: false,
-            kind: .command(
-                path: "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
-                args: ["-kill", "-r", "-domain", "local", "-domain", "system", "-domain", "user"]
-            )
-        ),
+        // No "Rebuild Launch Services": re-registering every app makes running
+        // Network Extension VPNs look reinstalled (their tunnels drop) and
+        // sends Siri/Apple Intelligence re-indexing every app for minutes.
         OptimizeAction(
             id: "finder",
             title: "Restart Finder",
@@ -88,6 +83,25 @@ final class OptimizeModel {
             kind: .command(path: "/usr/bin/killall", args: ["Dock"])
         ),
     ]
+
+    /// Entry point for the Run buttons: checks preconditions, then runs or asks.
+    func request(_ action: OptimizeAction, model: AppModel) {
+        guard states[action.id]?.running != true else { return }
+        guard case .maintenance(.flushDNS) = action.kind else {
+            run(action, model: model)
+            return
+        }
+        Task {
+            switch await VPNStatus.current() {
+            case .inactive:
+                self.run(action, model: model)
+            case .active(let name):
+                self.pendingConfirmation = (action, "A VPN is connected (\(name)). Flushing DNS restarts the system resolver, and many VPN clients drop and reconnect when that happens.")
+            case .unknown:
+                self.pendingConfirmation = (action, "Sweep couldn't tell whether a VPN is connected. If one is, flushing DNS may make it drop and reconnect.")
+            }
+        }
+    }
 
     func run(_ action: OptimizeAction, model: AppModel) {
         guard states[action.id]?.running != true else { return }
@@ -171,11 +185,11 @@ struct OptimizeView: View {
                                     HStack(spacing: 6) {
                                         Image(systemName: "checkmark.circle.fill")
                                             .foregroundStyle(Theme.mint)
-                                        Button("Run again") { optimize.run(action, model: model) }
+                                        Button("Run again") { optimize.request(action, model: model) }
                                             .buttonStyle(SecondaryButtonStyle())
                                     }
                                 } else {
-                                    Button("Run") { optimize.run(action, model: model) }
+                                    Button("Run") { optimize.request(action, model: model) }
                                         .buttonStyle(SecondaryButtonStyle())
                                 }
                             }
@@ -198,6 +212,19 @@ struct OptimizeView: View {
                 .sweepCard()
             }
             .padding(24)
+        }
+        .alert(
+            "Flush DNS anyway?",
+            isPresented: Binding(
+                get: { optimize.pendingConfirmation != nil },
+                set: { if !$0 { optimize.pendingConfirmation = nil } }
+            ),
+            presenting: optimize.pendingConfirmation
+        ) { pending in
+            Button("Flush DNS") { optimize.run(pending.action, model: model) }
+            Button("Cancel", role: .cancel) {}
+        } message: { pending in
+            Text(pending.message)
         }
     }
 }

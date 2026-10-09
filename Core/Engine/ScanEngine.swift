@@ -133,7 +133,7 @@ public struct ScanEngine: Sendable {
     }
 
     private func passesGates(_ url: URL, rule: CleaningRule) -> Bool {
-        if policy.isProtected(url) { return false }
+        if policy.isProtectedOrRedirected(url) { return false }
         if SafetyPolicy.isWhitelisted(url, whitelist: whitelist) { return false }
         // Never touch iCloud-managed items: no data loss, no surprise downloads.
         if let values = try? url.resourceValues(forKeys: [.isUbiquitousItemKey]),

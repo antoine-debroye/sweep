@@ -14,6 +14,11 @@ public struct SafetyPolicy: Sendable {
     /// Nodes that may not be deleted themselves, but whose children may be
     /// (e.g. ~/Library/Caches: we trim its contents, never the folder).
     public let protectedExactNodes: [String]
+    /// Live state that sits *inside* a cache-like folder. The node and its
+    /// subtree are protected like `protectedSubtrees`, and so is every folder
+    /// above it — deleting `Caches/org.R-project.R` removes the renv library
+    /// inside it just as surely as deleting the library itself.
+    public let liveDataNodes: [String]
 
     public init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
         self.home = home
@@ -67,12 +72,33 @@ public struct SafetyPolicy: Sendable {
         subtrees += SafetyPolicy.fileProviderContainers(home: home)
         self.protectedSubtrees = subtrees.map(SafetyPolicy.canonical)
 
+        self.liveDataNodes = [
+            // Google's pseudonymous ID and Clearcut log queue. No dot in the
+            // name, so no running-app check ever claims them; with them gone a
+            // running Gemini rewrites its state at ~50 MB/s until it quits.
+            "\(h)/Library/Caches/GIPPseudonymousID",
+            "\(h)/Library/Caches/CCTClearcutLogger",
+            // renv installs R packages here and symlinks them into every
+            // project library; deleting the cache leaves those links dangling.
+            "\(h)/Library/Caches/org.R-project.R/R/renv",
+            // Poetry's project virtualenvs (live interpreters), not a cache.
+            "\(h)/Library/Caches/pypoetry/virtualenvs",
+            // Deno keeps origin storage (localStorage) for --location scripts
+            // inside its cache root; the module caches beside it are offered.
+            "\(h)/Library/Caches/deno/location_data",
+        ].map(SafetyPolicy.canonical)
+
         self.protectedExactNodes = [
             h,
             "\(h)/Library",
             "\(h)/Library/Application Support",
             "\(h)/Library/Caches",
             "\(h)/Library/Logs",
+            // The crash reporter cannot recreate this folder from its sandbox;
+            // once it is gone every later crash report is silently dropped.
+            // Its reports may go, the folder may not.
+            "\(h)/Library/Logs/DiagnosticReports",
+            "\(h)/Library/DiagnosticReports",
             "\(h)/Library/Preferences",
             "\(h)/Library/Containers",
             "\(h)/Library/Group Containers",
@@ -96,7 +122,25 @@ public struct SafetyPolicy: Sendable {
         for subtree in protectedSubtrees {
             if path == subtree || path.hasPrefix(subtree + "/") { return true }
         }
+        for live in liveDataNodes {
+            if path == live || path.hasPrefix(live + "/") || live.hasPrefix(path + "/") { return true }
+        }
         return false
+    }
+
+    /// `isProtected`, also applied to where the path really leads. A cleanable
+    /// folder can be a symlink into a protected one (`Logs/DiagnosticReports`
+    /// → `~/Documents/reports`); the written path looks harmless while the
+    /// files it reaches are not. Only the *parent* is resolved: a symlink
+    /// item itself is safe to remove — that moves the link, not its target.
+    /// Kept out of `isProtected` because resolving costs a stat per component
+    /// and that one runs inside whole-tree walks.
+    public func isProtectedOrRedirected(_ url: URL) -> Bool {
+        if isProtected(url) { return true }
+        let parent = url.deletingLastPathComponent()
+        let resolvedParent = parent.resolvingSymlinksInPath()
+        guard SafetyPolicy.canonical(resolvedParent.path) != SafetyPolicy.canonical(parent.path) else { return false }
+        return isProtected(resolvedParent.appending(path: url.lastPathComponent))
     }
 
     /// true when the URL sits under a user-provided whitelist prefix.

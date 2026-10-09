@@ -349,8 +349,15 @@ struct DiskExplorerView: View {
                     if let d = node.newestModification, d >= LargeFile.plausibleDateFloor {
                         Text(d.sweepRelative).font(.system(size: 10)).foregroundStyle(.tertiary)
                     }
+                    if node.isPartial {
+                        Image(systemName: "exclamationmark.circle")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Theme.amber)
+                            .help("Partial size: some folders inside couldn't be read (permissions or Full Disk Access), so the real total is at least this much.")
+                    }
                     ByteText(bytes: node.allocatedSize, font: .system(size: 12, weight: .semibold, design: .rounded))
                         .frame(width: 74, alignment: .trailing)
+                        .opacity(node.isPartial ? 0.7 : 1)
                     if node.isDirectory {
                         Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
                     } else {

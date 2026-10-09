@@ -102,6 +102,7 @@ public enum LeftoverFinder {
         appName: String,
         teamID: String? = nil,
         depth: MatchDepth = .enhanced,
+        appURL: URL? = nil,
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> [ScanItem] {
         let fm = FileManager()
@@ -127,6 +128,7 @@ public enum LeftoverFinder {
         ]
         // Per-host preferences: <bundleID>.<UUID>.plist under Preferences/ByHost.
         candidates += matching(in: lib.appending(path: "Preferences/ByHost"), containing: bundleID, label: "Per-host preferences", fm: fm)
+            .filter { $0.0.lastPathComponent.lowercased().hasPrefix(bundleID.lowercased() + ".") }
             .map { ($0.0, $0.1, SafetyTier.explicitOnly) }
 
         if depth == .enhanced || depth == .deep {
@@ -136,11 +138,13 @@ public enum LeftoverFinder {
                 (lib.appending(path: "Logs/\(appName)"), "Logs", .explicitOnly),
                 (lib.appending(path: "Application Support/CrashReporter/\(appName)"), "Crash reports", .explicitOnly),
             ]
-            // Shared containers and launch agents addressed by a bundle-id prefix.
+            // Shared containers addressed by the bundle id as whole reverse-DNS
+            // labels (`<TEAM>.com.vendor.app`, `group.com.vendor.app`) — a bare
+            // substring would hand `com.vendor.app2`'s container to `com.vendor.app`.
             candidates += matching(in: lib.appending(path: "Group Containers"), containing: bundleID, label: "Group container", fm: fm)
+                .filter { containsLabels($0.0.lastPathComponent, bundleID) }
                 .map { ($0.0, $0.1, SafetyTier.explicitOnly) }
-            candidates += matching(in: lib.appending(path: "LaunchAgents"), containing: bundleID, label: "Launch agent", fm: fm)
-                .map { ($0.0, $0.1, SafetyTier.explicitOnly) }
+            candidates += launchAgents(in: lib.appending(path: "LaunchAgents"), bundleID: bundleID, appURL: appURL, fm: fm)
         }
 
         if depth == .deep {
@@ -197,6 +201,62 @@ public enum LeftoverFinder {
             if lReview != rReview { return !lReview }
             return lhs.size > rhs.size
         }
+    }
+
+    /// Launch agents that belong to the app being removed.
+    ///
+    /// A filename is a claim, not proof: anyone can name a plist after
+    /// someone else's bundle id, and `com.vendor.app` is a prefix of
+    /// `com.vendor.app2`. An agent is pre-selected only when its file is
+    /// exactly `<bundleID>.plist`, or the program it launches lives inside the
+    /// app bundle being removed. A plist that merely carries the bundle id as
+    /// whole labels is offered for review; anything looser is not offered.
+    static func launchAgents(in dir: URL, bundleID: String, appURL: URL?, fm: FileManager) -> [(URL, String, SafetyTier)] {
+        guard let entries = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isSymbolicLinkKey]) else { return [] }
+        let exactName = bundleID.lowercased() + ".plist"
+        let bundlePrefix = appURL.map { SafetyPolicy.canonical($0.path) + "/" }
+        var found: [(URL, String, SafetyTier)] = []
+        for entry in entries {
+            let name = entry.lastPathComponent.lowercased()
+            guard name.hasSuffix(".plist"), !name.hasPrefix("com.apple."),
+                  (try? entry.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else { continue }
+            if name == exactName {
+                found.append((entry, "Launch agent", .explicitOnly))
+                continue
+            }
+            if let bundlePrefix, let program = launchedProgram(entry),
+               !program.contains(".."), SafetyPolicy.canonical(program).hasPrefix(bundlePrefix) {
+                found.append((entry, "Launch agent (runs from the app)", .explicitOnly))
+                continue
+            }
+            if containsLabels(String(entry.lastPathComponent.dropLast(".plist".count)), bundleID) {
+                found.append((entry, "Launch agent — ownership unverified, review", .review))
+            }
+        }
+        return found
+    }
+
+    /// `Program`, else the first `ProgramArguments` entry.
+    static func launchedProgram(_ plist: URL) -> String? {
+        guard let data = try? Data(contentsOf: plist),
+              let dict = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        else { return nil }
+        if let program = dict["Program"] as? String { return program }
+        return (dict["ProgramArguments"] as? [String])?.first
+    }
+
+    /// True when `id`'s dot-separated labels appear, consecutively and whole,
+    /// among `name`'s: `ABCD.com.vendor.app` and `com.vendor.app.helper`
+    /// contain `com.vendor.app`; `com.vendor.app2` does not.
+    static func containsLabels(_ name: String, _ id: String) -> Bool {
+        let haystack = name.lowercased().split(separator: ".", omittingEmptySubsequences: false)
+        let needle = id.lowercased().split(separator: ".", omittingEmptySubsequences: false)
+        guard !needle.isEmpty, haystack.count >= needle.count else { return false }
+        for start in 0...(haystack.count - needle.count)
+        where Array(haystack[start..<(start + needle.count)]) == needle {
+            return true
+        }
+        return false
     }
 
     private static func matching(in dir: URL, containing needle: String, label: String, fm: FileManager) -> [(URL, String)] {

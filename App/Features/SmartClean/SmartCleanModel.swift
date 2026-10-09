@@ -162,6 +162,7 @@ final class SmartCleanModel {
             for item in extras.1 { self.ingest(item) }
             self.activeCategories.remove(.appLeftovers)
             self.activeCategories.remove(.projectArtifacts)
+            self.collapseNestedItems()
 
             self.phase = .results
         }
@@ -176,6 +177,17 @@ final class SmartCleanModel {
         if item.tier == .safe {
             selection.insert(item.id)
         }
+    }
+
+    /// Items stream in from independent rules, so an outer folder can arrive
+    /// after one nested inside it. Once everything is in, keep the outer one.
+    private func collapseNestedItems() {
+        let kept = ScanItem.collapsingNested(allItems)
+        guard kept.count != allItems.count else { return }
+        let keptIDs = Set(kept.map(\.id))
+        itemsByCategory = Dictionary(grouping: kept, by: \.category)
+        selection = selection.intersection(keptIDs)
+        runningTotal = kept.reduce(0) { $0 + $1.size }
     }
 
     func cancelScan() {

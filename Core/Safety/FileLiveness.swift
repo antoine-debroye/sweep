@@ -113,7 +113,7 @@ public struct LsofProbe: OpenHandleProbing {
         // 124 = our own timeout; >=128 = killed by a signal. Neither is an
         // answer, and treating them as "nothing is open" is how a clean tool
         // deletes a file out from under a live process.
-        if result.status == 124 || result.status >= 128 {
+        if result.status == ProcessRunner.timedOutStatus || result.status >= 128 {
             return ProbeOutcome(failureReason: "lsof did not finish in time")
         }
         // lsof exits 1 both for "no match" and for real errors, so the

@@ -4,6 +4,19 @@ public struct DirectoryStats: Sendable {
     public var size: Int64 = 0
     public var fileCount: Int = 0
     public var newestModification: Date?
+    /// Entries the walk could not read (permissions, TCC). Non-zero means
+    /// `size` is a lower bound, not a measurement.
+    public var unreadableEntries: Int = 0
+    /// A `.git` entry exists somewhere below the root: the tree holds a
+    /// repository, so it is not disposable build output whatever its name.
+    public var containsGitMetadata = false
+
+    public var isPartial: Bool { unreadableEntries > 0 }
+}
+
+/// Counts walk errors from the enumerator's escaping error handler.
+private final class ErrorTally: @unchecked Sendable {
+    var count = 0
 }
 
 public enum DirectorySizer {
@@ -32,7 +45,7 @@ public enum DirectorySizer {
         let keys: [URLResourceKey] = [
             .isRegularFileKey, .isSymbolicLinkKey,
             .totalFileAllocatedSizeKey, .fileAllocatedSizeKey,
-            .contentModificationDateKey,
+            .contentModificationDateKey, .linkCountKey, .fileResourceIdentifierKey,
         ]
 
         var isDirectory: ObjCBool = false
@@ -54,19 +67,37 @@ public enum DirectorySizer {
             stats.newestModification = values.contentModificationDate
         }
 
-        guard let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: keys, options: [], errorHandler: { _, _ in true }) else {
+        let errors = ErrorTally()
+        guard let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: keys, options: [], errorHandler: { _, error in
+            // An entry that vanished mid-walk was never ours to count; one we
+            // could not open is a hole in the measurement.
+            if !DirectorySizer.isVanished(error) { errors.count += 1 }
+            return true
+        }) else {
+            stats.unreadableEntries = 1
             return stats
         }
 
         let rootComponentCount = url.standardizedFileURL.pathComponents.count
+        // Hard links share their blocks: count each multiply-linked file once,
+        // as `du` does, or a pnpm-style tree reads as several times its size.
+        var seenLinked = Set<NSObject>()
+        let keySet = Set(keys)   // built once, not per entry
         var visited = 0
         for case let child as URL in enumerator {
             visited += 1
             if visited % 512 == 0, Task.isCancelled { break }
-            guard let values = try? child.resourceValues(forKeys: Set(keys)) else { continue }
+            if child.lastPathComponent == ".git" { stats.containsGitMetadata = true }
+            guard let values = try? child.resourceValues(forKeys: keySet) else { continue }
             let isRegularFile = values.isRegularFile == true
             if isRegularFile {
-                stats.size += Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
+                var counted = true
+                if (values.linkCount ?? 1) > 1, let id = values.fileResourceIdentifier as? NSObject {
+                    counted = seenLinked.insert(id).inserted
+                }
+                if counted {
+                    stats.size += Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
+                }
                 stats.fileCount += 1
             }
             if ignoringHiddenEntries {
@@ -78,7 +109,21 @@ public enum DirectorySizer {
                 }
             }
         }
+        stats.unreadableEntries = errors.count
         return stats
+    }
+
+    static func isVanished(_ error: Error) -> Bool {
+        let ns = error as NSError
+        if ns.domain == NSCocoaErrorDomain, ns.code == NSFileReadNoSuchFileError || ns.code == NSFileNoSuchFileError {
+            return true
+        }
+        if ns.domain == NSPOSIXErrorDomain, ns.code == Int(ENOENT) { return true }
+        if let underlying = ns.userInfo[NSUnderlyingErrorKey] as? NSError,
+           underlying.domain == NSPOSIXErrorDomain, underlying.code == Int(ENOENT) {
+            return true
+        }
+        return false
     }
 
     /// True when any path component of `url` *below* the scan root is
