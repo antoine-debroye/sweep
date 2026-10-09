@@ -25,6 +25,28 @@ final class ProcessRunnerTests: XCTestCase {
         XCTAssertEqual(result.status, 128 + SIGTERM)
     }
 
+    /// Dozens of concurrent runs (one `git status` per worktree) once parked
+    /// every thread of GCD's shared pool while the pipe readers they waited
+    /// on queued for a thread that never came. After 30 s the wait gave up
+    /// and returned status 0 with empty output — "clean" for a dirty worktree.
+    func testManyConcurrentRunsAllReturnTheirOutput() async {
+        let start = Date()
+        let results = await withTaskGroup(of: (Int, ProcessResult).self) { group in
+            for i in 0..<100 {
+                group.addTask { (i, await ProcessRunner.run("/bin/echo", ["run-\(i)"], timeout: 15)) }
+            }
+            var all: [(Int, ProcessResult)] = []
+            for await result in group { all.append(result) }
+            return all
+        }
+        XCTAssertEqual(results.count, 100)
+        for (i, result) in results {
+            XCTAssertEqual(result.status, 0, "run \(i): \(result.stderr)")
+            XCTAssertEqual(result.stdout, "run-\(i)")
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(start), 15)
+    }
+
     func testMissingExecutableIs127() {
         let result = ProcessRunner.runBlocking("/nonexistent/tool", [], timeout: nil)
         XCTAssertEqual(result.status, 127)

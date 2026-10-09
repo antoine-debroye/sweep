@@ -82,12 +82,13 @@ public enum DirectorySizer {
         // Hard links share their blocks: count each multiply-linked file once,
         // as `du` does, or a pnpm-style tree reads as several times its size.
         var seenLinked = Set<NSObject>()
+        let keySet = Set(keys)   // built once, not per entry
         var visited = 0
         for case let child as URL in enumerator {
             visited += 1
             if visited % 512 == 0, Task.isCancelled { break }
             if child.lastPathComponent == ".git" { stats.containsGitMetadata = true }
-            guard let values = try? child.resourceValues(forKeys: Set(keys)) else { continue }
+            guard let values = try? child.resourceValues(forKeys: keySet) else { continue }
             let isRegularFile = values.isRegularFile == true
             if isRegularFile {
                 var counted = true

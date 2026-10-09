@@ -184,7 +184,7 @@ public enum ProcessRunner {
         _ path: String, _ args: [String], timeout: TimeInterval, environment: [String: String] = [:]
     ) async -> ProcessResult {
         await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
+            onDedicatedThread {
                 continuation.resume(returning: runBlocking(path, args, timeout: timeout, environment: environment))
             }
         }
@@ -193,10 +193,21 @@ public enum ProcessRunner {
     /// Runs an executable with arguments, capturing output. Never a shell.
     public static func run(_ path: String, _ args: [String]) async -> ProcessResult {
         await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
+            onDedicatedThread {
                 continuation.resume(returning: runBlocking(path, args, timeout: nil))
             }
         }
+    }
+
+    /// Blocking work — waiting on a child, draining its pipes — runs on its
+    /// own thread, never on GCD's shared global pool. That pool is capped: with
+    /// enough concurrent runs (one `git status` per worktree) every pool thread
+    /// sits waiting, and the pipe readers that would let them finish can't get
+    /// a thread at all.
+    private static func onDedicatedThread(_ body: @escaping @Sendable () -> Void) {
+        let thread = Thread(block: body)
+        thread.stackSize = 512 * 1024
+        thread.start()
     }
 
     /// Synchronous core, for callers that already run on a worker thread
@@ -228,11 +239,15 @@ public enum ProcessRunner {
         let outBox = OutputBox()
         let errBox = OutputBox()
         let drains = DispatchGroup()
-        DispatchQueue.global(qos: .utility).async(group: drains) {
+        drains.enter()
+        onDedicatedThread {
             outBox.data = outPipe.fileHandleForReading.readDataToEndOfFile()
+            drains.leave()
         }
-        DispatchQueue.global(qos: .utility).async(group: drains) {
+        drains.enter()
+        onDedicatedThread {
             errBox.data = errPipe.fileHandleForReading.readDataToEndOfFile()
+            drains.leave()
         }
 
         var timedOut = false
@@ -248,10 +263,16 @@ public enum ProcessRunner {
         }
         // A grandchild that inherited the pipes can keep them open after the
         // child is gone; don't let it hold a timed-out call hostage.
-        _ = drains.wait(timeout: .now() + (timedOut ? 1 : 30))
+        let drained = drains.wait(timeout: .now() + (timedOut ? 1 : 30)) == .success
 
         if timedOut {
             return ProcessResult(status: timedOutStatus, stdout: "", stderr: "timed out after \(timeout ?? 0)s")
+        }
+        // Output we never finished reading is not an answer. Reporting the
+        // exit status with a truncated (often empty) stdout would turn
+        // `git status` on a dirty worktree into "clean".
+        guard drained else {
+            return ProcessResult(status: timedOutStatus, stdout: "", stderr: "output did not close after the process exited")
         }
         // Foundation reports a signal death as the bare signal number (9, 15),
         // which reads like an ordinary exit code. Use the shell's 128+N so

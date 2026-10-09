@@ -76,15 +76,22 @@ public enum WorktreeScanner {
     public static func scan(devFolders: [URL], policy: SafetyPolicy, maxDepth: Int = 6) async -> [AgentWorktree] {
         let claude = findWorktreeDirs(devFolders: devFolders, policy: policy, maxDepth: maxDepth)
         let codex = findCodexWorktrees(home: policy.home, policy: policy)
+        let jobs: [(URL, String?)] = claude.map { ($0, nil) } + codex.map { ($0, "Codex › \($0.lastPathComponent)") }
         var results: [AgentWorktree] = []
+        // A handful at a time: each one sizes a full checkout and runs git
+        // twice, and there can be dozens.
         await withTaskGroup(of: AgentWorktree?.self) { group in
-            for url in claude {
-                group.addTask { await describe(url) }
+            var pending = jobs.makeIterator()
+            for _ in 0..<min(8, jobs.count) {
+                guard let (url, name) = pending.next() else { break }
+                group.addTask { await describe(url, name: name) }
             }
-            for url in codex {
-                group.addTask { await describe(url, name: "Codex › \(url.lastPathComponent)") }
+            for await wt in group {
+                if let wt { results.append(wt) }
+                if let (url, name) = pending.next() {
+                    group.addTask { await describe(url, name: name) }
+                }
             }
-            for await wt in group where wt != nil { results.append(wt!) }
         }
         return results.sorted { $0.size > $1.size }
     }
