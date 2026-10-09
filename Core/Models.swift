@@ -274,6 +274,24 @@ public struct ScanItem: Sendable, Identifiable, Hashable {
     public static func == (lhs: ScanItem, rhs: ScanItem) -> Bool { lhs.id == rhs.id }
 }
 
+extension ScanItem {
+    /// Drops items that sit inside another item of the same list. Rules
+    /// overlap (`Caches/Google` and `Caches/Google/Chrome`): listing both
+    /// counts the inner bytes twice, and cleaning both fails on the second.
+    /// The outer item already removes the inner one, so it is the one kept.
+    public static func collapsingNested(_ items: [ScanItem]) -> [ScanItem] {
+        let paths = Set(items.map { SafetyPolicy.canonical($0.url.path) })
+        return items.filter { item in
+            var dir = (SafetyPolicy.canonical(item.url.path) as NSString).deletingLastPathComponent
+            while dir.count > 1 {
+                if paths.contains(dir) { return false }
+                dir = (dir as NSString).deletingLastPathComponent
+            }
+            return true
+        }
+    }
+}
+
 public struct ScanReport: Sendable {
     public let items: [ScanItem]
     public let startedAt: Date

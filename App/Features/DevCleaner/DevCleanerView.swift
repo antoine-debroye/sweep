@@ -13,6 +13,7 @@ final class DevCleanerModel {
     var artifactMinAgeDays = 30
     var statusMessage: String?
     var dockerDF: String?
+    var brewPreview: BrewCleanupPreview?
     var toolOutputs: [String: ToolRun] = [:]
     var simulators = SimulatorInventory()
     var simulatorSelection: Set<String> = []
@@ -48,8 +49,7 @@ final class DevCleanerModel {
         Task {
             let report = await engine.scanReport(rules: devRules)
             var seen = Set<String>()
-            self.items = report.items
-                .filter { seen.insert($0.url.path).inserted }
+            self.items = ScanItem.collapsingNested(report.items.filter { seen.insert($0.url.path).inserted })
                 .sorted { $0.size > $1.size }
             self.selection.formUnion(report.items.filter { $0.tier == .safe }.map(\.id))
 
@@ -62,6 +62,7 @@ final class DevCleanerModel {
 
             self.scanning = false
             self.fetchDockerDF()
+            self.fetchBrewPreview()
             await self.scanSimulators()
         }
     }
@@ -167,7 +168,13 @@ final class DevCleanerModel {
             self.artifacts.removeAll { removed.contains($0.url.path) }
             self.worktrees.removeAll { removed.contains($0.url.path) }
             self.selection = []
-            self.statusMessage = "Freed \(session.totalFreed.sweepBytes)."
+            // Trash-first: nothing is freed until the Trash is emptied.
+            let moved = session.items.contains { $0.trashPath != nil }
+            var status = moved
+                ? "Moved \(session.totalFreed.sweepBytes) to the Trash — empty it to free the space."
+                : "Deleted \(session.totalFreed.sweepBytes)."
+            if let kept = session.errors.first { status += " · " + kept }
+            self.statusMessage = status
         }
     }
 
@@ -175,10 +182,23 @@ final class DevCleanerModel {
         guard let docker = ["/opt/homebrew/bin/docker", "/usr/local/bin/docker"]
             .first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else { return }
         Task {
-            let result = await ProcessRunner.run(docker, ["system", "df", "--format", "{{.Type}}: {{.Reclaimable}}"])
+            let result = await ProcessRunner.run(docker, ["system", "df", "--format", DockerDiskUsage.format], timeout: 10)
             if result.status == 0, !result.stdout.isEmpty {
-                self.dockerDF = result.stdout
+                self.dockerDF = DockerDiskUsage.summary(result.stdout)
             }
+        }
+    }
+
+    /// brew's own dry run, so the row says what it frees before it runs.
+    private func fetchBrewPreview() {
+        guard let brew = Self.tools.first(where: { $0.id == "brew" }),
+              FileManager.default.isExecutableFile(atPath: brew.executable) else { return }
+        Task {
+            let result = await ProcessRunner.run(
+                brew.executable, BrewCleanupPreview.cleanupArguments + ["--dry-run"],
+                timeout: 120, environment: BrewCleanupPreview.environment
+            )
+            if result.status == 0 { self.brewPreview = BrewCleanupPreview.parse(result.stdout) }
         }
     }
 
@@ -191,25 +211,23 @@ final class DevCleanerModel {
         let symbol: String
         let executable: String
         let args: [String]
+        var environment: [String: String] = [:]
     }
 
     static let tools: [DevTool] = [
         DevTool(
             id: "brew",
             title: "Homebrew cleanup",
-            detail: "brew cleanup --prune=all — removes old versions and cached downloads.",
+            detail: "brew cleanup --prune=all — removes old versions and cached downloads. Never uninstalls formulae.",
             symbol: "mug",
             executable: "/opt/homebrew/bin/brew",
-            args: ["cleanup", "--prune=all", "-s"]
+            args: BrewCleanupPreview.cleanupArguments,
+            environment: BrewCleanupPreview.environment
         ),
-        DevTool(
-            id: "simctl",
-            title: "Remove unavailable simulators",
-            detail: "xcrun simctl delete unavailable — deletes simulators for old runtimes.",
-            symbol: "iphone.gen3",
-            executable: "/usr/bin/xcrun",
-            args: ["simctl", "delete", "unavailable"]
-        ),
+        // No blind `simctl delete unavailable`: a device is "unavailable" both
+        // when its runtime was retired on purpose and when the runtime merely
+        // went missing — and in the second case the command destroys the
+        // device's data. The Simulators section lists them one by one instead.
         DevTool(
             id: "docker",
             title: "Docker prune",
@@ -244,7 +262,7 @@ final class DevCleanerModel {
             executable = "/opt/homebrew/bin/docker"
         }
         Task {
-            let result = await ProcessRunner.run(executable, tool.args)
+            let result = await ProcessRunner.run(executable, tool.args, timeout: 900, environment: tool.environment)
             let output = [result.stdout, result.stderr].filter { !$0.isEmpty }.joined(separator: "\n")
             self.toolOutputs[tool.id] = ToolRun(
                 running: false,
@@ -582,6 +600,12 @@ struct DevCleanerView: View {
                             Button("Run") { dev.run(tool) }
                                 .buttonStyle(SecondaryButtonStyle())
                         }
+                    }
+                    if tool.id == "brew", let preview = dev.brewPreview, run?.output == nil {
+                        Text(preview.summary)
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     if tool.id.hasPrefix("docker"), let df = dev.dockerDF {
                         Text("Reclaimable now:\n\(df)")

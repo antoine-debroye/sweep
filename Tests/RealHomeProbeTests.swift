@@ -90,4 +90,53 @@ final class RealHomeProbeTests: XCTestCase {
             XCTAssertFalse(path.contains("Bookmarks"), "offered browser bookmarks: \(path)")
         }
     }
+
+    /// Read-only: what the Mole V1.56–V1.58 alignment changes do on this Mac.
+    func testProbeSafetyRefinements() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["SWEEP_REAL_HOME_PROBE"] == "1",
+                          "set SWEEP_REAL_HOME_PROBE=1 to run the read-only probe")
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let policy = SafetyPolicy(home: home)
+        let running = NSWorkspace.shared.runningApplications
+        let engine = ScanEngine(policy: policy,
+                                runningBundleIDs: Set(running.compactMap(\.bundleIdentifier)),
+                                runningAppNames: Set(running.compactMap(\.localizedName).map { $0.lowercased() }))
+        let watched: Set<String> = ["crash-reports", "user-logs", "vscode-caches", "installer-archives", "js-package-caches", "user-caches"]
+        let rules = RuleCatalog.rules(home: home, includeSystemDomain: false).filter { watched.contains($0.id) }
+        let items = await engine.scanReport(rules: rules).items
+        for item in items.sorted(by: { $0.size > $1.size }) where item.ruleID != "user-caches" || item.size > 100_000_000 {
+            print("PROBE2 offer \(item.size.sweepBytes.padding(toLength: 10, withPad: " ", startingAt: 0)) [\(item.ruleID)] \(item.url.path)")
+        }
+        XCTAssertFalse(items.contains { $0.url.path == home.appending(path: "Library/Logs/DiagnosticReports").path })
+        XCTAssertFalse(items.contains { policy.isProtected($0.url) })
+
+        let all = items.count
+        let collapsed = ScanItem.collapsingNested(items).count
+        print("PROBE2 nested collapse: \(all) -> \(collapsed)")
+
+        // Git guard over the configured dev folders.
+        // The app's own saved dev folders (read, never written).
+        let saved = UserDefaults(suiteName: "com.debroye.sweep")?.stringArray(forKey: "devFolders") ?? []
+        let devFolders = (saved.isEmpty ? ["Developer", "Projects", "Code", "dev", "src", "workspace", "CleanUpTool"].map { home.appending(path: $0).path } : saved)
+            .map { URL(fileURLWithPath: $0) }
+        print("PROBE2 dev folders: \(devFolders.map(\.path))")
+        let candidates = ProjectArtifactScanner.artifactCandidates(devFolders: devFolders, policy: policy)
+        var kept: [String] = []
+        for url in candidates {
+            let verdict = ArtifactGitGuard.verdict(for: url)
+            if !verdict.isRegenerable { kept.append("\(verdict.reason): \(url.path)") }
+        }
+        print("PROBE2 artifacts: \(candidates.count) candidates, \(kept.count) kept by Git")
+        for line in kept.prefix(40) { print("PROBE2  kept \(line)") }
+
+        // Other installed copies, for every app.
+        for app in await AppInventory.scan() {
+            let others = OtherAppCopies.find(bundleID: app.bundleID, excluding: app.url)
+            if !others.isEmpty {
+                print("PROBE2 copies \(app.name): \((others.copies + others.unchecked).map(\.path))")
+            }
+        }
+        print("PROBE2 network mounts: \(OtherAppCopies.networkMountPoints())")
+        print("PROBE2 vpn: \(await VPNStatus.current())")
+    }
 }

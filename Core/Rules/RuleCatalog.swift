@@ -28,8 +28,22 @@ public enum RuleCatalog {
             id: "user-logs",
             category: .systemJunk,
             title: "Logs & diagnostics",
-            detail: "App logs, diagnostic and crash reports in ~/Library/Logs.",
+            detail: "App logs in ~/Library/Logs.",
             paths: [lib.appending(path: "Logs")],
+            minAgeDays: 3,
+            tier: .safe
+        ))
+        // The reports go, the DiagnosticReports folders stay (SafetyPolicy):
+        // the crash reporter cannot recreate them from its sandbox.
+        rules.append(CleaningRule(
+            id: "crash-reports",
+            category: .systemJunk,
+            title: "Crash & diagnostic reports",
+            detail: "Old crash, hang and spin reports. The folders macOS writes new reports into are kept.",
+            paths: [
+                lib.appending(path: "Logs/DiagnosticReports"),
+                lib.appending(path: "DiagnosticReports"),
+            ],
             minAgeDays: 3,
             tier: .safe
         ))
@@ -275,13 +289,18 @@ public enum RuleCatalog {
             id: "js-package-caches",
             category: .developer,
             title: "JavaScript package caches",
-            detail: "npm, Yarn and Bun download caches. Packages re-download on demand.",
+            detail: "npm, Yarn, Bun and Deno download caches. Packages re-download on demand.",
             paths: [
                 home.appending(path: ".npm/_cacache"),
                 lib.appending(path: "Caches/Yarn"),
                 home.appending(path: ".yarn/berry/cache"),
                 home.appending(path: ".bun/install/cache"),
-                lib.appending(path: "Caches/deno"),
+                // Deno's module caches only: its cache root also holds origin
+                // storage (`location_data`), which SafetyPolicy keeps.
+                lib.appending(path: "Caches/deno/remote"),
+                lib.appending(path: "Caches/deno/npm"),
+                lib.appending(path: "Caches/deno/gen"),
+                lib.appending(path: "Caches/deno/deps"),
             ],
             contentsOnly: false,
             minAgeDays: 14,
@@ -431,12 +450,13 @@ public enum RuleCatalog {
             id: "vscode-caches",
             category: .developer,
             title: "VS Code caches",
-            detail: "VS Code's regenerable disk caches.",
+            detail: "VS Code's regenerable disk caches and downloaded extension packages. Not your settings or installed extensions.",
             paths: [
                 codeSupport.appending(path: "Cache"),
                 codeSupport.appending(path: "CachedData"),
                 codeSupport.appending(path: "Code Cache"),
                 codeSupport.appending(path: "GPUCache"),
+                codeSupport.appending(path: "CachedExtensionVSIXs"),
                 codeSupport.appending(path: "logs"),
             ],
             contentsOnly: false,
@@ -638,6 +658,16 @@ public enum RuleCatalog {
             detail: "Disk images and installer packages sitting in Downloads.",
             paths: [home.appending(path: "Downloads")],
             extensions: ["dmg", "pkg", "iso", "xip", "mpkg"],
+            minAgeDays: 7,
+            tier: .review
+        ))
+        rules.append(CleaningRule(
+            id: "installer-archives",
+            category: .installers,
+            title: "Zipped app downloads",
+            detail: "ZIP archives in Downloads that contain an app or installer you have likely already installed.",
+            paths: DynamicPaths.installerArchives(in: home.appending(path: "Downloads")),
+            contentsOnly: false,
             minAgeDays: 7,
             tier: .review
         ))

@@ -134,10 +134,13 @@ public enum ProjectArtifactScanner {
         "Pods", "DerivedData", ".gradle",
     ]
 
+    public static let ruleID = "project-artifacts"
+
     public static func scan(
         devFolders: [URL],
         minAgeDays: Int,
-        policy: SafetyPolicy
+        policy: SafetyPolicy,
+        git: ArtifactGitGuard.GitRunner? = ArtifactGitGuard.defaultGit
     ) -> [ScanItem] {
         // Phase 1 (cheap, sequential): walk the dev folders and collect the
         // artifact directories. Phase 2 (the expensive part — sizing tens of
@@ -149,8 +152,13 @@ public enum ProjectArtifactScanner {
         DispatchQueue.concurrentPerform(iterations: candidates.count) { index in
             guard !results.cancelled else { return }
             let url = candidates[index]
+            // Before sizing: a checked-in `build/` is not build output.
+            guard ArtifactGitGuard.verdict(for: url, git: git).isRegenerable else { return }
             let stats = DirectorySizer.stats(of: url)
-            guard stats.size > 0 else { return }
+            // A repository anywhere inside (a checkout under Flutter's build/,
+            // a vendored dependency) means it isn't disposable output. The
+            // shallow check above can't see that deep; the sizing walk can.
+            guard stats.size > 0, !stats.containsGitMetadata else { return }
             if minAgeDays > 0 {
                 let newest = stats.newestModification ?? .distantPast
                 guard Date().timeIntervalSince(newest) / 86_400 >= Double(minAgeDays) else { return }
@@ -158,7 +166,7 @@ public enum ProjectArtifactScanner {
             let name = url.lastPathComponent
             let project = url.deletingLastPathComponent().lastPathComponent
             results.append(ScanItem(
-                ruleID: "project-artifacts",
+                ruleID: ruleID,
                 category: .projectArtifacts,
                 url: url,
                 displayName: "\(project)/\(name)",

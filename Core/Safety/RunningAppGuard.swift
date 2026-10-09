@@ -6,12 +6,21 @@ public enum RunningAppGuard {
     /// Known cache-folder names that don't equal the app's bundle id.
     static let nameToBundleID: [String: String] = [
         "chrome": "com.google.chrome",
-        "google": "com.google.chrome",
+        // Each browser channel is its own app with its own data folder. A
+        // channel running alone must protect its own caches.
+        "chrome beta": "com.google.chrome.beta",
+        "chrome dev": "com.google.chrome.dev",
+        "chrome canary": "com.google.chrome.canary",
+        "chromium": "org.chromium.chromium",
         "firefox": "org.mozilla.firefox",
         "arc": "company.thebrowser.browser",
         "microsoft edge": "com.microsoft.edgemac",
-        "bravesoftware": "com.brave.browser",
+        "microsoft edge beta": "com.microsoft.edgemac.beta",
+        "microsoft edge dev": "com.microsoft.edgemac.dev",
+        "microsoft edge canary": "com.microsoft.edgemac.canary",
         "brave-browser": "com.brave.browser",
+        "brave-browser-beta": "com.brave.browser.beta",
+        "brave-browser-nightly": "com.brave.browser.nightly",
         "vivaldi": "com.vivaldi.vivaldi",
         "code": "com.microsoft.vscode",
         "cursor": "com.todesktop.230313mzl4w4u92",
@@ -30,6 +39,14 @@ public enum RunningAppGuard {
         "homebrew": "",
     ]
 
+    /// Vendor folders shared by every channel of a browser (`Google/…`,
+    /// `BraveSoftware/…`). Any running channel claims them: the folder above a
+    /// channel's data is that channel's data too.
+    static let vendorFamilies: [String: String] = [
+        "google": "com.google.chrome",
+        "bravesoftware": "com.brave.browser",
+    ]
+
     /// `running` = lowercased bundle ids; `names` = lowercased localized app
     /// names (Electron apps store data under their display name, e.g.
     /// "Notion", not their bundle id, so a name match is the only reliable
@@ -46,6 +63,10 @@ public enum RunningAppGuard {
             if lowered.contains(name) { return true }
             if loweredNames.contains(name) { return true }
             if let mapped = nameToBundleID[name], !mapped.isEmpty, lowered.contains(mapped) {
+                return true
+            }
+            if let family = vendorFamilies[name],
+               lowered.contains(where: { $0 == family || $0.hasPrefix(family + ".") }) {
                 return true
             }
         }

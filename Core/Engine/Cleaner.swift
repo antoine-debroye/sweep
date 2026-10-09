@@ -47,6 +47,9 @@ public struct Cleaner: Sendable {
     public let permanentRemover: FileRemover
     public let privileged: PrivilegedRemoving?
     public let liveness: FileLiveness
+    /// Re-checks project artifacts against Git at the last moment (see
+    /// `ArtifactGitGuard`); injectable for tests.
+    public let git: ArtifactGitGuard.GitRunner?
 
     public init(
         policy: SafetyPolicy,
@@ -54,7 +57,8 @@ public struct Cleaner: Sendable {
         trashRemover: FileRemover = TrashRemover(),
         permanentRemover: FileRemover = PermanentRemover(),
         privileged: PrivilegedRemoving? = nil,
-        liveness: FileLiveness = FileLiveness()
+        liveness: FileLiveness = FileLiveness(),
+        git: ArtifactGitGuard.GitRunner? = ArtifactGitGuard.defaultGit
     ) {
         self.policy = policy
         self.whitelist = whitelist
@@ -62,6 +66,7 @@ public struct Cleaner: Sendable {
         self.permanentRemover = permanentRemover
         self.privileged = privileged
         self.liveness = liveness
+        self.git = git
     }
 
     /// Rules whose targets are, by their nature, things a process may be
@@ -157,6 +162,16 @@ public struct Cleaner: Sendable {
                 }
                 guard now == scanned else {
                     errors.append("Skipped, changed since the scan: \(item.url.path)")
+                    continue
+                }
+            }
+
+            // A build folder can become checked-in between scan and click (a
+            // branch switch, a `git add`). The scan's verdict is minutes old.
+            if item.ruleID == ProjectArtifactScanner.ruleID {
+                let verdict = await ArtifactGitGuard.verdictAsync(for: item.url, git: git)
+                guard verdict.isRegenerable else {
+                    errors.append("Kept, \(verdict.reason): \(item.url.path)")
                     continue
                 }
             }

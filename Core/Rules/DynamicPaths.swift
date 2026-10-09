@@ -108,7 +108,9 @@ public enum DynamicPaths {
     /// Chromium-based browser data roots relative to ~/Library/Application Support.
     static let chromiumRoots: [String] = [
         "Google/Chrome", "Google/Chrome Beta", "Google/Chrome Canary", "Chromium",
-        "BraveSoftware/Brave-Browser", "Microsoft Edge", "Vivaldi", "Arc/User Data", "Arc",
+        "BraveSoftware/Brave-Browser", "BraveSoftware/Brave-Browser-Beta", "BraveSoftware/Brave-Browser-Nightly",
+        "Microsoft Edge", "Microsoft Edge Beta", "Microsoft Edge Dev", "Microsoft Edge Canary",
+        "Vivaldi", "Arc/User Data", "Arc",
     ]
 
     /// Per-profile subfolders that are pure caches (rebuilt silently).
@@ -178,6 +180,7 @@ public enum DynamicPaths {
     /// Apps with dedicated, finer-grained rules, and browsers (Chromium rule).
     static let electronSkipList: Set<String> = [
         "cursor", "code", "code - insiders", "google", "bravesoftware", "microsoft edge",
+        "microsoft edge beta", "microsoft edge dev", "microsoft edge canary",
         "vivaldi", "arc", "chromium", "firefox",
     ]
 
@@ -253,15 +256,35 @@ public enum DynamicPaths {
     }
 
     /// Extension folders the editor itself has marked obsolete
-    /// (`<extensions>/.obsolete` is a JSON object keyed by folder name).
+    /// (`<extensions>/.obsolete` is a JSON object keyed by folder name, each
+    /// value `true` while the folder awaits removal).
     public static func obsoleteExtensionDirs(extensionsRoot: URL) -> [URL] {
         let marker = extensionsRoot.appending(path: ".obsolete")
         guard let data = try? Data(contentsOf: marker),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
         return object.keys.sorted().compactMap { name in
+            // Only an explicit `true` is a removal mark; anything else is a
+            // format we don't understand, so the folder stays.
+            guard (object[name] as? Bool) == true else { return nil }
             guard !name.contains("/"), !name.hasPrefix(".") else { return nil }
             let dir = extensionsRoot.appending(path: name)
             return isDirectory(dir) ? dir : nil
+        }
+    }
+
+    /// ZIP downloads that contain an app or installer (many apps ship as
+    /// `.zip`, not `.dmg`). Dataless iCloud placeholders are skipped — reading
+    /// one would download it.
+    public static func installerArchives(in folder: URL) -> [URL] {
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .fileSizeKey, .totalFileAllocatedSizeKey, .isUbiquitousItemKey]
+        let entries = (try? FileManager().contentsOfDirectory(at: folder, includingPropertiesForKeys: Array(keys))) ?? []
+        return entries.filter { url in
+            guard url.pathExtension.lowercased() == "zip",
+                  let values = try? url.resourceValues(forKeys: keys),
+                  values.isRegularFile == true, values.isUbiquitousItem != true,
+                  let size = values.fileSize, size >= 1_000_000,
+                  Int64(values.totalFileAllocatedSize ?? 0) * 2 >= Int64(size) else { return false }
+            return ZipListing.looksLikeInstaller(url)
         }
     }
 

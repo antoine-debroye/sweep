@@ -18,7 +18,7 @@ DMG.
 | **Large Files** | Files ≥100 MB in your home folder, oldest-first review, explicit selection only |
 | **AI Models** | Inventories local LLM/ML models from **Ollama, LM Studio and Hugging Face**, plus weights bundled by other apps (Whisper/TTS/LLM files in their Application Support folders, PyTorch/Whisper caches), with size & last-used; remove selectively. Ollama via its safe `ollama rm`, the rest Trash-first. Never auto-selected |
 | **Dev Cleaner** | **Simulator runtimes & devices** (size, last boot, "select suggested" for unusable/old runtimes and stale devices; removed through `simctl`, never raw `rm`), Xcode derived data & device support (keeps the two newest per platform), npm/yarn/pnpm/bun, pip/uv, cargo, gradle, brew, **Cursor/VS Code/Electron caches**, **Claude Desktop VM bundles**, **Android emulators & SDK**, Docker prune and deep prune (with `docker system df`), stale Claude Code / Cursor Agent versions, obsolete editor extensions, npx/Vite/Poetry/rustup/buildx-style tool caches, stale `node_modules`/`target`/`.build`, and an **AI-agent worktree cleaner** that runs `git status` on each worktree — dirty ones are locked, orphaned ones are reclaimable |
-| **Optimize** | Flush DNS, rebuild Spotlight/LaunchServices, thin Time Machine snapshots, restart Finder/Dock |
+| **Optimize** | Flush DNS (asks first when a VPN is connected), rebuild Spotlight, thin Time Machine snapshots, restart Finder/Dock |
 | **History** | Every clean logged; one-click **Undo** restores from Trash |
 | **Auto-Trim** | Background menu-bar agent trims Safe-tier junk untouched for 30+ days, Trash-first, with a notification and undo. Configurable interval and low-disk threshold, plus a **Run now** button in Settings |
 
@@ -42,6 +42,18 @@ DMG.
   Offline web-app storage and Chrome's on-device AI model are Review tier.
 - **Simulators go through `simctl`**, never a raw delete of CoreSimulator folders,
   and the newest runtime per platform is never suggested.
+- **Build folders Git tracks are not build output** — a `build/`, `dist/` or `Pods/`
+  with checked-in files (electron-builder icons and entitlements, committed action
+  bundles) or a repository inside is never offered, and is re-checked right before
+  removal.
+- **Live data inside cache folders is protected with every folder above it** —
+  renv libraries, Poetry virtualenvs, Deno origin storage, Google's identity state —
+  and `DiagnosticReports` folders are kept (only their reports are cleaned), since
+  macOS can't recreate them.
+- **Uninstalls take only what provably belongs to the app** — a launch agent is
+  pre-selected only when it is named for the app's exact bundle id or runs from
+  inside its bundle, and nothing is pre-selected while another copy of the app is
+  still installed.
 - **Whitelist** anything else in Settings; iCloud placeholders are never touched.
 - The privileged helper accepts only an allow-listed set of system-junk paths —
   it can't be used as a generic delete-as-root service.

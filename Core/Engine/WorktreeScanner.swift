@@ -74,11 +74,15 @@ public enum WorktreeScanner {
     ]
 
     public static func scan(devFolders: [URL], policy: SafetyPolicy, maxDepth: Int = 6) async -> [AgentWorktree] {
-        let urls = findWorktreeDirs(devFolders: devFolders, policy: policy, maxDepth: maxDepth)
+        let claude = findWorktreeDirs(devFolders: devFolders, policy: policy, maxDepth: maxDepth)
+        let codex = findCodexWorktrees(home: policy.home, policy: policy)
         var results: [AgentWorktree] = []
         await withTaskGroup(of: AgentWorktree?.self) { group in
-            for url in urls {
+            for url in claude {
                 group.addTask { await describe(url) }
+            }
+            for url in codex {
+                group.addTask { await describe(url, name: "Codex › \(url.lastPathComponent)") }
             }
             for await wt in group where wt != nil { results.append(wt!) }
         }
@@ -124,7 +128,34 @@ public enum WorktreeScanner {
         return found
     }
 
-    static func describe(_ url: URL) async -> AgentWorktree? {
+    /// The Codex app keeps every worktree under one fixed container outside
+    /// any project, so the dev-folder walk never reaches it. A checkout is a
+    /// folder with a `.git` entry, directly in the container or one level
+    /// down (a per-task folder holding the repo).
+    static func findCodexWorktrees(home: URL, policy: SafetyPolicy) -> [URL] {
+        let fm = FileManager()
+        let container = home.appending(path: ".codex/worktrees")
+        // A symlinked container could point anywhere; don't follow it.
+        guard (try? container.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == false else { return [] }
+        func subdirectories(_ dir: URL) -> [URL] {
+            let kids = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey])) ?? []
+            return kids.filter {
+                let values = try? $0.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                return values?.isDirectory == true && values?.isSymbolicLink != true && !policy.isProtected($0)
+            }
+        }
+        var found: [URL] = []
+        for child in subdirectories(container) {
+            if fm.fileExists(atPath: child.appending(path: ".git").path) {
+                found.append(child)
+            } else {
+                found += subdirectories(child).filter { fm.fileExists(atPath: $0.appending(path: ".git").path) }
+            }
+        }
+        return found
+    }
+
+    static func describe(_ url: URL, name: String? = nil) async -> AgentWorktree? {
         let stats = DirectorySizer.stats(of: url)
         guard stats.size > 0 else { return nil }
 
@@ -154,7 +185,7 @@ public enum WorktreeScanner {
 
         return AgentWorktree(
             url: url,
-            name: "\(project)/\(url.lastPathComponent)",
+            name: name ?? "\(project)/\(url.lastPathComponent)",
             branch: branch,
             state: state,
             dirtyCount: dirtyLines.count,

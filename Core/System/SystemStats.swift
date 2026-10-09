@@ -156,32 +156,37 @@ public struct ProcessResult: Sendable {
     public let stderr: String
 }
 
-/// Mutable box for handing captured stderr back from a reader queue.
+/// Mutable box for handing captured output back from a reader queue.
 private final class OutputBox: @unchecked Sendable {
-    var data = Data()
+    private let lock = NSLock()
+    private var storage = Data()
+
+    var data: Data {
+        get { lock.lock(); defer { lock.unlock() }; return storage }
+        set { lock.lock(); storage = newValue; lock.unlock() }
+    }
 }
 
 public enum ProcessRunner {
+    /// Status reported for a child that outlived its time limit — the same
+    /// convention `timeout(1)` uses.
+    public static let timedOutStatus: Int32 = 124
+
     /// Runs an executable with a wall-clock limit, capturing output. A child
-    /// that outlives `timeout` is terminated and reported as status 124 (the
-    /// same convention `timeout(1)` uses), so callers can tell "it said no"
-    /// from "it never answered" — a distinction that matters when the answer
-    /// authorizes a deletion.
+    /// that outlives `timeout` is terminated and reported as status 124, so
+    /// callers can tell "it said no" from "it never answered" — a distinction
+    /// that matters when the answer authorizes a deletion.
+    ///
+    /// The limit is enforced by killing the child, not by racing a timer
+    /// against it: a task group waits for every child task before it returns,
+    /// so a timer race still blocked for as long as the process ran.
     public static func run(
-        _ path: String, _ args: [String], timeout: TimeInterval
+        _ path: String, _ args: [String], timeout: TimeInterval, environment: [String: String] = [:]
     ) async -> ProcessResult {
-        await withTaskGroup(of: ProcessResult?.self) { group in
-            group.addTask { await run(path, args) }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(timeout))
-                return nil
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: runBlocking(path, args, timeout: timeout, environment: environment))
             }
-            for await result in group {
-                group.cancelAll()
-                if let result { return result }
-                return ProcessResult(status: 124, stdout: "", stderr: "timed out after \(timeout)s")
-            }
-            return ProcessResult(status: 124, stdout: "", stderr: "timed out")
         }
     }
 
@@ -189,35 +194,75 @@ public enum ProcessRunner {
     public static func run(_ path: String, _ args: [String]) async -> ProcessResult {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: path)
-                process.arguments = args
-                let outPipe = Pipe()
-                let errPipe = Pipe()
-                process.standardOutput = outPipe
-                process.standardError = errPipe
-                do {
-                    try process.run()
-                    // Read stderr on a separate queue so a child that fills the
-                    // stderr buffer while we drain stdout (or vice-versa) can't
-                    // deadlock — both pipes are drained concurrently.
-                    let errBox = OutputBox()
-                    let errQueue = DispatchQueue(label: "sweep.proc.stderr")
-                    errQueue.async {
-                        errBox.data = errPipe.fileHandleForReading.readDataToEndOfFile()
-                    }
-                    let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-                    errQueue.sync {}
-                    process.waitUntilExit()
-                    continuation.resume(returning: ProcessResult(
-                        status: process.terminationStatus,
-                        stdout: String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-                        stderr: String(data: errBox.data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                    ))
-                } catch {
-                    continuation.resume(returning: ProcessResult(status: 127, stdout: "", stderr: error.localizedDescription))
-                }
+                continuation.resume(returning: runBlocking(path, args, timeout: nil))
             }
         }
+    }
+
+    /// Synchronous core, for callers that already run on a worker thread
+    /// (e.g. inside `concurrentPerform`). Never call it from the main thread.
+    /// `environment` entries are added to (and override) the inherited ones.
+    public static func runBlocking(
+        _ path: String, _ args: [String], timeout: TimeInterval?, environment: [String: String] = [:]
+    ) -> ProcessResult {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = args
+        if !environment.isEmpty {
+            process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
+        }
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
+        do {
+            try process.run()
+        } catch {
+            return ProcessResult(status: 127, stdout: "", stderr: error.localizedDescription)
+        }
+
+        // Drain both pipes concurrently so a child that fills one buffer while
+        // we wait on the other can't deadlock.
+        let outBox = OutputBox()
+        let errBox = OutputBox()
+        let drains = DispatchGroup()
+        DispatchQueue.global(qos: .utility).async(group: drains) {
+            outBox.data = outPipe.fileHandleForReading.readDataToEndOfFile()
+        }
+        DispatchQueue.global(qos: .utility).async(group: drains) {
+            errBox.data = errPipe.fileHandleForReading.readDataToEndOfFile()
+        }
+
+        var timedOut = false
+        if let timeout, exited.wait(timeout: .now() + timeout) == .timedOut {
+            timedOut = true
+            process.terminate()   // SIGTERM first
+            if exited.wait(timeout: .now() + 1) == .timedOut {
+                kill(process.processIdentifier, SIGKILL)
+                exited.wait()
+            }
+        } else if timeout == nil {
+            exited.wait()
+        }
+        // A grandchild that inherited the pipes can keep them open after the
+        // child is gone; don't let it hold a timed-out call hostage.
+        _ = drains.wait(timeout: .now() + (timedOut ? 1 : 30))
+
+        if timedOut {
+            return ProcessResult(status: timedOutStatus, stdout: "", stderr: "timed out after \(timeout ?? 0)s")
+        }
+        // Foundation reports a signal death as the bare signal number (9, 15),
+        // which reads like an ordinary exit code. Use the shell's 128+N so
+        // callers' "killed by a signal" checks actually see it.
+        let status = process.terminationReason == .uncaughtSignal
+            ? 128 + process.terminationStatus
+            : process.terminationStatus
+        return ProcessResult(
+            status: status,
+            stdout: String(data: outBox.data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+            stderr: String(data: errBox.data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        )
     }
 }

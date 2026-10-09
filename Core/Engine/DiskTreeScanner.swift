@@ -13,11 +13,16 @@ public struct DiskNode: Identifiable, Sendable {
     public let fileCount: Int
     public let newestModification: Date?
     public let kind: DiskNodeKind
+    /// Part of the folder could not be read, so `allocatedSize` is a lower
+    /// bound. Shown as such rather than as a confident (and wrong) total.
+    public let isPartial: Bool
 
     public var id: String { url.path }
 
     public init(url: URL, name: String, isDirectory: Bool, allocatedSize: Int64,
-                logicalSize: Int64, fileCount: Int, newestModification: Date?, kind: DiskNodeKind) {
+                logicalSize: Int64, fileCount: Int, newestModification: Date?, kind: DiskNodeKind,
+                isPartial: Bool = false) {
+        self.isPartial = isPartial
         self.url = url
         self.name = name
         self.isDirectory = isDirectory
@@ -121,17 +126,29 @@ public enum DiskTreeScanner {
         let logical: Int64
         let fileCount: Int
         let newest: Date?
+        var partial = false
         if isDir {
             let stats = DirectorySizer.stats(of: url)   // recursive, allocated bytes
             allocated = stats.size
             logical = stats.size
             fileCount = stats.fileCount
             newest = stats.newestModification
+            partial = stats.isPartial
         } else {
             allocated = Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
             logical = Int64(values.totalFileSize ?? values.fileSize ?? 0)
             fileCount = 1
             newest = values.contentModificationDate
+        }
+
+        var kind = classify(url: url, allocated: allocated, logical: logical,
+                            isUbiquitous: isUbiquitous, policy: policy)
+        // "Safe" for a build-output name is a claim that it regenerates; a
+        // checked-in `build/` or `dist/` does not, so it drops to Review.
+        if kind == .safeToDelete, isDir,
+           ProjectArtifactScanner.artifactNames.contains(url.lastPathComponent),
+           !ArtifactGitGuard.verdict(for: url).isRegenerable {
+            kind = .review
         }
 
         return DiskNode(
@@ -142,8 +159,8 @@ public enum DiskTreeScanner {
             logicalSize: logical,
             fileCount: fileCount,
             newestModification: newest,
-            kind: classify(url: url, allocated: allocated, logical: logical,
-                           isUbiquitous: isUbiquitous, policy: policy)
+            kind: kind,
+            isPartial: partial
         )
     }
 
