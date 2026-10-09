@@ -29,6 +29,8 @@ final class UninstallerModel {
     var findingLeftovers = false
     /// Why leftovers were withheld (another installed copy shares them).
     var leftoverNote: String?
+    /// Other installed copies of the selected app (same bundle id).
+    var otherCopies = OtherAppCopies()
     var uninstalling = false
     var statusMessage: String?
     var appSizes: [String: Int64] = [:]
@@ -71,6 +73,7 @@ final class UninstallerModel {
         leftovers = []
         leftoverSelection = []
         leftoverNote = nil
+        otherCopies = OtherAppCopies()
         statusMessage = nil
         findLeftovers(for: app)
     }
@@ -88,6 +91,7 @@ final class UninstallerModel {
             await MainActor.run { [weak self] in
                 guard let self, self.selected?.bundleID == bundleID else { return }
                 self.leftoverNote = others.note(appName: name)
+                self.otherCopies = others
                 self.leftovers = found
                 // Pre-select confident matches only; heuristic ".review" hits are
                 // left unchecked for the user to opt into.
@@ -148,8 +152,32 @@ final class UninstallerModel {
             domain: .user
         )
         let selectedLeftovers = leftovers.filter { leftoverSelection.contains($0.id) }
+        let soleCopy = otherCopies.isEmpty
 
         Task {
+            // Stop the app's own background jobs first, or a helper still
+            // executing from inside the bundle makes the in-use gate refuse
+            // the bundle and the uninstall stops half-way. Only when this is
+            // the sole copy: another copy's helpers carry the same labels.
+            var stoppedNote = ""
+            if soleCopy {
+                let agentPlists = selectedLeftovers.filter { $0.detail.hasPrefix("Launch agent") }.map(\.url)
+                let labels = AppBackgroundJobs.ownedLabels(appURL: app.url, removingAgentPlists: agentPlists)
+                let result = await AppBackgroundJobs.stop(labels: labels)
+                if !result.stopped.isEmpty {
+                    stoppedNote = result.stopped.count == 1
+                        ? "Stopped 1 background item. " : "Stopped \(result.stopped.count) background items. "
+                }
+            }
+            let stillRunning = await Task.detached { AppBackgroundJobs.processesInside(app.url) }.value
+            guard stillRunning.isEmpty else {
+                let names = stillRunning.map { URL(fileURLWithPath: $0).lastPathComponent }.joined(separator: ", ")
+                self.statusMessage = stoppedNote + "\(names) is still running from inside \(app.name). "
+                    + "Quit it (or log out), then try again — nothing was removed."
+                self.uninstalling = false
+                return
+            }
+
             let cleaner = Cleaner(policy: model.policy, whitelist: model.settings.whitelist, privileged: model.broker)
             let session = await cleaner.clean(
                 items: [appItem] + selectedLeftovers,
@@ -163,9 +191,9 @@ final class UninstallerModel {
             // otherwise the user would see it "gone" while it's still installed.
             let bundleRemoved = session.items.contains { $0.originalPath == app.url.path }
             if session.errors.isEmpty {
-                self.statusMessage = "Uninstalled \(app.name) — \(session.totalFreed.sweepBytes) moved to Trash."
+                self.statusMessage = stoppedNote + "Uninstalled \(app.name) — \(session.totalFreed.sweepBytes) moved to Trash."
             } else {
-                self.statusMessage = "Finished with issues: " + session.errors.joined(separator: " · ")
+                self.statusMessage = stoppedNote + "Finished with issues: " + session.errors.joined(separator: " · ")
             }
             if bundleRemoved {
                 self.apps.removeAll { $0.id == app.id }

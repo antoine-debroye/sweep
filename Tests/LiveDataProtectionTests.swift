@@ -93,6 +93,38 @@ final class LiveDataProtectionTests: XCTestCase {
         XCTAssertTrue(SafetyPolicy(home: home).isProtected(home.appending(path: "Library/Logs/DiagnosticReports")))
     }
 
+    /// A cleanable folder that is really a symlink into a protected one must
+    /// not lend its harmless-looking path to the files behind it.
+    func testSymlinkedFolderCannotRedirectCleaningIntoProtectedData() async throws {
+        try file("Documents/reports/keep-me.ips")
+        try fm.createDirectory(at: home.appending(path: "Library/Logs"), withIntermediateDirectories: true)
+        try fm.createSymbolicLink(at: home.appending(path: "Library/Logs/DiagnosticReports"),
+                                  withDestinationURL: home.appending(path: "Documents/reports"))
+
+        let offered = await offeredPaths()
+        XCTAssertFalse(offered.contains { $0.contains("keep-me") }, "\(offered)")
+
+        let lexical = home.appending(path: "Library/Logs/DiagnosticReports/keep-me.ips")
+        let item = ScanItem(ruleID: "crash-reports", category: .systemJunk, url: lexical, displayName: "keep-me.ips",
+                            detail: "", size: 1, fileCount: 1, newestModification: nil, tier: .safe, domain: .user)
+        let recorder = RecordingRemover()
+        let cleaner = Cleaner(policy: SafetyPolicy(home: home), trashRemover: recorder, permanentRemover: recorder)
+        let session = await cleaner.clean(items: [item], source: .smartScan, permanentDelete: false)
+        XCTAssertTrue(recorder.removed.isEmpty)
+        XCTAssertTrue(session.errors.contains { $0.hasPrefix("Refused protected path") })
+        XCTAssertTrue(fm.fileExists(atPath: home.appending(path: "Documents/reports/keep-me.ips").path))
+    }
+
+    /// Removing a symlink moves the link, never its target — so a link item
+    /// itself is still fine to offer.
+    func testASymlinkItemIsNotTreatedAsItsTarget() throws {
+        try file("Documents/notes.txt")
+        let link = home.appending(path: "Library/Caches/notes-link")
+        try fm.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fm.createSymbolicLink(at: link, withDestinationURL: home.appending(path: "Documents/notes.txt"))
+        XCTAssertFalse(SafetyPolicy(home: home).isProtectedOrRedirected(link))
+    }
+
     // MARK: - Editor caches
 
     func testVSCodeExtensionDownloadCacheIsOffered() async throws {

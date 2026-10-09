@@ -18,6 +18,11 @@ public struct OtherAppCopies: Sendable, Equatable {
     /// they are not examined — and since they can't be ruled out, they count.
     public var unchecked: [URL] = []
 
+    public init(copies: [URL] = [], unchecked: [URL] = []) {
+        self.copies = copies
+        self.unchecked = unchecked
+    }
+
     public var isEmpty: Bool { copies.isEmpty && unchecked.isEmpty }
 
     /// A sentence for the leftovers panel, or nil when there are none.

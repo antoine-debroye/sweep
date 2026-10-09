@@ -128,6 +128,21 @@ public struct SafetyPolicy: Sendable {
         return false
     }
 
+    /// `isProtected`, also applied to where the path really leads. A cleanable
+    /// folder can be a symlink into a protected one (`Logs/DiagnosticReports`
+    /// → `~/Documents/reports`); the written path looks harmless while the
+    /// files it reaches are not. Only the *parent* is resolved: a symlink
+    /// item itself is safe to remove — that moves the link, not its target.
+    /// Kept out of `isProtected` because resolving costs a stat per component
+    /// and that one runs inside whole-tree walks.
+    public func isProtectedOrRedirected(_ url: URL) -> Bool {
+        if isProtected(url) { return true }
+        let parent = url.deletingLastPathComponent()
+        let resolvedParent = parent.resolvingSymlinksInPath()
+        guard SafetyPolicy.canonical(resolvedParent.path) != SafetyPolicy.canonical(parent.path) else { return false }
+        return isProtected(resolvedParent.appending(path: url.lastPathComponent))
+    }
+
     /// true when the URL sits under a user-provided whitelist prefix.
     public static func isWhitelisted(_ url: URL, whitelist: [String]) -> Bool {
         guard !whitelist.isEmpty else { return false }

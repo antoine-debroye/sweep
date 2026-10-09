@@ -123,7 +123,7 @@ public struct Cleaner: Sendable {
 
         for item in userItems {
             guard !Task.isCancelled else { break }
-            guard !policy.isProtected(item.url) else {
+            guard !policy.isProtectedOrRedirected(item.url) else {
                 errors.append("Refused protected path: \(item.url.path)")
                 continue
             }
