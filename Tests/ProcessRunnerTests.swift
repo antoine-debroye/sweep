@@ -30,3 +30,14 @@ final class ProcessRunnerTests: XCTestCase {
         XCTAssertEqual(result.status, 127)
     }
 }
+
+/// An unsigned build must never manage the system-wide helper registration.
+@MainActor
+final class PrivilegeBrokerSigningTests: XCTestCase {
+    func testUnsignedProcessIsNotTrustedToManageTheHelper() {
+        // The test runner is not signed with Sweep's Developer ID team. (No
+        // install/uninstall call here: if this guard ever regressed, the test
+        // itself would change the machine's real helper registration.)
+        XCTAssertFalse(PrivilegeBroker.isSignedForHelper)
+    }
+}

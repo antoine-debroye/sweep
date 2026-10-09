@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import Security
 import ServiceManagement
 
 /// Front door for anything that needs root: prefers the SMAppService helper
@@ -35,6 +36,28 @@ public final class PrivilegeBroker {
         SMAppService.daemon(plistName: SweepHelperConstants.daemonPlistName)
     }
 
+    /// True only for a build signed by the team the helper trusts.
+    ///
+    /// Anything else (a Debug build, an ad-hoc signature) is rejected by the
+    /// helper, and must not touch the daemon's registration either: the
+    /// registration lives system-wide, so an unsigned build "repairing" it
+    /// unregistered the installed app's working helper and then failed to
+    /// register its own. Registering an ad-hoc helper is worse still — macOS
+    /// pins the daemon to that signature and every later Developer ID build is
+    /// refused with a launch-constraint violation.
+    public nonisolated static let isSignedForHelper: Bool = {
+        var code: SecCode?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return false }
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode else { return false }
+        var info: CFDictionary?
+        guard SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
+              let dict = info as? [String: Any] else { return false }
+        return dict[kSecCodeInfoTeamIdentifier as String] as? String == SweepHelperConstants.teamIdentifier
+    }()
+
+    static let unsignedBuildMessage = "This build isn't signed with Sweep's Developer ID, so it can't manage the privileged helper."
+
     public init() {
         refreshHelperState()
     }
@@ -50,6 +73,10 @@ public final class PrivilegeBroker {
     }
 
     public func installHelper() {
+        guard Self.isSignedForHelper else {
+            lastError = Self.unsignedBuildMessage
+            return
+        }
         do {
             try daemonService.register()
             lastError = nil
@@ -63,6 +90,10 @@ public final class PrivilegeBroker {
     }
 
     public func uninstallHelper() {
+        guard Self.isSignedForHelper else {
+            lastError = Self.unsignedBuildMessage
+            return
+        }
         do {
             try daemonService.unregister()
             lastError = nil
@@ -85,7 +116,9 @@ public final class PrivilegeBroker {
     private func viaHelper(
         _ body: @escaping @Sendable (SweepHelperProtocol, @escaping @Sendable (Int32, String) -> Void) -> Void
     ) async -> String? {
-        guard helperState == .enabled else { return nil }
+        // An unsigned build can't be served; go straight to the fallback
+        // rather than failing the call and "repairing" a healthy daemon.
+        guard helperState == .enabled, Self.isSignedForHelper else { return nil }
         do {
             return try await xpcCall(body)
         } catch {
@@ -98,7 +131,7 @@ public final class PrivilegeBroker {
     /// Re-registers the daemon so launchd reloads the current helper binary.
     /// At most once per session, so a genuinely broken helper can't loop.
     private func repairHelperOnce() -> Bool {
-        guard !didAttemptHelperRepair else { return false }
+        guard !didAttemptHelperRepair, Self.isSignedForHelper else { return false }
         didAttemptHelperRepair = true
         NSLog("Sweep: re-registering the privileged helper (stale daemon suspected)")
         do {

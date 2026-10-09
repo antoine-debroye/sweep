@@ -24,6 +24,9 @@ public enum SweepHelperConstants {
     public static let machServiceName = "com.debroye.sweep.helper"
     public static let daemonPlistName = "com.debroye.sweep.helper.plist"
     public static let version = "1.0.0"
+    /// Developer ID team the helper accepts clients from (pinned in its
+    /// code requirement in Helper/main.swift).
+    public static let teamIdentifier = "FC27NYGHX4"
 }
 
 /// Maintenance tasks the helper is willing to execute. Each case maps to a
