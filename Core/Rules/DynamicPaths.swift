@@ -288,6 +288,56 @@ public enum DynamicPaths {
         }
     }
 
+    /// Playwright browser builds (`chromium-1248`, `firefox-1555`…) that no
+    /// project still uses.
+    ///
+    /// Each `playwright install` leaves a file in `.links` holding the path of
+    /// that project's `playwright-core`, whose `browsers.json` names the exact
+    /// revisions it launches. A build referenced by any live project is kept,
+    /// and so is the newest build of each browser. If a link points at a
+    /// project that exists but can't be read, nothing is offered: Sweep can't
+    /// tell what that project needs.
+    public static func unusedPlaywrightBrowsers(root: URL) -> [URL] {
+        let fm = FileManager()
+        let builds = directories(in: root).compactMap { url -> (url: URL, family: String, revision: Int)? in
+            let name = url.lastPathComponent
+            guard let dash = name.lastIndex(of: "-"),
+                  let revision = Int(name[name.index(after: dash)...]) else { return nil }
+            return (url, String(name[..<dash]), revision)
+        }
+        guard !builds.isEmpty else { return [] }
+
+        var referenced: Set<String> = []
+        let links = (try? fm.contentsOfDirectory(at: root.appending(path: ".links"), includingPropertiesForKeys: nil)) ?? []
+        for link in links {
+            guard let target = try? String(contentsOf: link, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines), !target.isEmpty else { continue }
+            let core = URL(fileURLWithPath: target)
+            // Project deleted: Playwright's own cleanup drops this link too.
+            guard fm.fileExists(atPath: core.path) else { continue }
+            guard let names = playwrightBuildNames(core.appending(path: "browsers.json")) else { return [] }
+            referenced.formUnion(names)
+        }
+
+        let newest = Dictionary(grouping: builds, by: \.family).compactMapValues { $0.max { $0.revision < $1.revision }?.url }
+        return builds
+            .filter { !referenced.contains($0.url.lastPathComponent) && newest[$0.family] != $0.url }
+            .map(\.url)
+    }
+
+    /// Folder names a `browsers.json` resolves to (`chromium-headless-shell`
+    /// revision 1248 lives in `chromium_headless_shell-1248`), or nil when the
+    /// file can't be read.
+    static func playwrightBuildNames(_ browsersJSON: URL) -> Set<String>? {
+        struct Manifest: Decodable {
+            struct Browser: Decodable { let name: String; let revision: String }
+            let browsers: [Browser]
+        }
+        guard let data = try? Data(contentsOf: browsersJSON),
+              let manifest = try? JSONDecoder().decode(Manifest.self, from: data) else { return nil }
+        return Set(manifest.browsers.map { $0.name.replacingOccurrences(of: "-", with: "_") + "-" + $0.revision })
+    }
+
     /// Codex runtime folders that never finished installing (no `runtime.json`).
     public static func incompleteCodexRuntimes(home: URL) -> [URL] {
         let root = home.appending(path: ".cache/codex-runtimes")
@@ -303,7 +353,8 @@ public enum DynamicPaths {
     public static func staleDeviceSupport(home: URL, keep: Int = 2) -> [URL] {
         let dev = home.appending(path: "Library/Developer/Xcode")
         var stale: [URL] = []
-        for platform in ["iOS DeviceSupport", "watchOS DeviceSupport", "tvOS DeviceSupport", "visionOS DeviceSupport"] {
+        for platform in ["iOS DeviceSupport", "watchOS DeviceSupport", "tvOS DeviceSupport", "visionOS DeviceSupport",
+                         "macOS DeviceSupport"] {
             let dirs = directories(in: dev.appending(path: platform))
             guard dirs.count > keep else { continue }
             let byDate = dirs.sorted { modificationDate($0) > modificationDate($1) }

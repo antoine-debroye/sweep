@@ -58,6 +58,12 @@ public enum BundleProtection {
         // Local-first notes and databases people would not expect a cleaner
         // to touch.
         "md.obsidian", "com.devonthink.*", "net.shinyfrog.bear",
+        // Game libraries and shared engine folders: the Steam folder holds
+        // the installed games themselves, and Unity/Epic folders are shared
+        // by every editor or game from that vendor.
+        "com.valvesoftware.*", "com.epicgames.*", "com.unity3d.*",
+        // Clipboard history (including copied images) people search later.
+        "com.raycast.*",
     ]
 
     /// Non-Apple bundles the machine depends on.
@@ -97,6 +103,8 @@ public enum BundleProtection {
         "keepassx", "keepassxc", "enpass", "authy", "yubico", "yubikey",
         "keychain", "keychains", "gnupg", "gpg", "gpgtools", "veracrypt",
         "rime", "squirrel", "inputmethod", "obsidian", "devonthink", "bear",
+        "steam", "steamapps", "epic", "epicgames", "epicgameslauncher",
+        "unity", "unityhub", "unity3d", "raycast",
     ]
 
     /// Glob with optional leading/trailing `*`. Deliberately minimal: a full

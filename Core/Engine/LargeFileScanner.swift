@@ -34,7 +34,7 @@ public enum LargeFileScanner {
     static let pruneDirNames: Set<String> = [
         "node_modules", ".git", ".svn", ".hg", "target", "build", "dist",
         ".next", ".nuxt", ".turbo", ".parcel-cache", "Pods", "DerivedData",
-        ".gradle", "venv", ".venv", "__pycache__", ".tox", ".cache", "Caches",
+        ".gradle", "venv", ".venv", "__pycache__", ".tox", ".dart_tool", ".cache", "Caches",
         ".ollama", ".lmstudio",
     ]
 
@@ -130,7 +130,7 @@ public enum ProjectArtifactScanner {
     public static let artifactNames: Set<String> = [
         "node_modules", ".build", "target", "dist", "build",
         ".next", ".nuxt", ".turbo", ".parcel-cache",
-        "venv", ".venv", "__pycache__", ".tox",
+        "venv", ".venv", "__pycache__", ".tox", ".dart_tool",
         "Pods", "DerivedData", ".gradle",
     ]
 

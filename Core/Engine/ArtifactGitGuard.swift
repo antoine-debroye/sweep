@@ -112,6 +112,10 @@ public enum ArtifactGitGuard {
         return { arguments in ProcessRunner.runBlocking(git, arguments, timeout: probeTimeout) }
     }()
 
+    /// A git that runs without macOS offering to install developer tools, or
+    /// nil. Resolved once.
+    static let gitPath: String? = resolvedGitPath()
+
     static func resolvedGitPath() -> String? {
         let fm = FileManager()
         for path in ["/opt/homebrew/bin/git", "/usr/local/bin/git"] where fm.isExecutableFile(atPath: path) {

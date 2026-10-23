@@ -18,12 +18,23 @@ public struct OtherAppCopies: Sendable, Equatable {
     /// they are not examined — and since they can't be ruled out, they count.
     public var unchecked: [URL] = []
 
-    public init(copies: [URL] = [], unchecked: [URL] = []) {
+    /// Beta, Nightly or Insiders builds of the same app (or the stable app,
+    /// when removing one of those). They have their own bundle id, but often
+    /// share folders named after the app, so nothing is pre-selected while
+    /// one is installed. They don't count as copies for `isEmpty`: their
+    /// background jobs and bundle-id data are their own.
+    public var siblings: [URL] = []
+
+    public init(copies: [URL] = [], unchecked: [URL] = [], siblings: [URL] = []) {
         self.copies = copies
         self.unchecked = unchecked
+        self.siblings = siblings
     }
 
     public var isEmpty: Bool { copies.isEmpty && unchecked.isEmpty }
+
+    /// Whether anything else installed may still use these leftovers.
+    public var sharesData: Bool { !isEmpty || !siblings.isEmpty }
 
     /// A sentence for the leftovers panel, or nil when there are none.
     public func note(appName: String) -> String? {
@@ -35,7 +46,60 @@ public struct OtherAppCopies: Sendable, Equatable {
             return "A copy of \(appName) is registered on a network volume (\(copy.deletingLastPathComponent().path)) "
                 + "that Sweep can't check, so its shared settings and data are kept."
         }
+        if let sibling = siblings.first {
+            return "\(sibling.deletingPathExtension().lastPathComponent) is also installed and may share some of "
+                + "these settings and data, so none are selected. Tick any you still want removed."
+        }
         return nil
+    }
+
+    // MARK: Sibling builds
+
+    /// Trailing words that mark a pre-release or side-by-side build.
+    static let variantWords: Set<String> = [
+        "beta", "nightly", "canary", "insiders", "insider", "dev", "developer",
+        "preview", "alpha",
+    ]
+
+    /// Other installed apps that are a different build of the same product:
+    /// "Firefox" and "Firefox Nightly", `com.vendor.app` and
+    /// `com.vendor.app.beta`. Matched by name with the variant word removed,
+    /// or by bundle id with a variant component removed.
+    public static func siblingBuilds(
+        bundleID: String, appName: String, appURL: URL,
+        installed: [(url: URL, name: String, bundleID: String)]
+    ) -> [URL] {
+        let ownName = baseName(appName)
+        let ownID = baseBundleID(bundleID)
+        return installed.compactMap { other in
+            guard other.url.standardizedFileURL != appURL.standardizedFileURL,
+                  other.bundleID.lowercased() != bundleID.lowercased() else { return nil }
+            let sameName = ownName.count >= 3 && baseName(other.name) == ownName
+            let sameID = ownID.split(separator: ".").count >= 3 && baseBundleID(other.bundleID) == ownID
+            return sameName || sameID ? other.url : nil
+        }
+    }
+
+    /// "Firefox Nightly" → "firefox", "Visual Studio Code - Insiders" → "visual studio code".
+    static func baseName(_ name: String) -> String {
+        var words = name.lowercased()
+            .split(whereSeparator: { $0 == " " || $0 == "-" || $0 == "_" })
+            .map(String.init)
+        if words.count > 1, let last = words.last, variantWords.contains(last) { words.removeLast() }
+        return words.joined(separator: " ")
+    }
+
+    /// `com.vendor.app.beta` → `com.vendor.app`, `com.microsoft.vscodeinsiders` → `com.microsoft.vscode`.
+    static func baseBundleID(_ id: String) -> String {
+        var parts = id.lowercased().split(separator: ".").map(String.init)
+        guard parts.count >= 3, var last = parts.last else { return id.lowercased() }
+        if variantWords.contains(last) {
+            parts.removeLast()
+        } else if let word = variantWords.first(where: { last.hasSuffix($0) && last.count > $0.count + 2 }) {
+            last.removeLast(word.count)
+            parts[parts.count - 1] = last
+        }
+        return parts.joined(separator: ".")
     }
 
     public typealias Lookup = @Sendable (_ bundleID: String) -> [URL]

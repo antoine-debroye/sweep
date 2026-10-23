@@ -19,7 +19,9 @@ public enum RuleCatalog {
             title: "App caches",
             detail: "Per-app caches in ~/Library/Caches. Apps rebuild these on demand.",
             paths: [lib.appending(path: "Caches")],
-            excludeNames: ["com.apple.bird", "cloudkit", "com.apple.cloudkit", "com.apple.fileprovider", "homebrew"],
+            // ms-playwright holds the browsers projects run their tests with;
+            // only builds no project uses go (playwright-old-browsers).
+            excludeNames: ["com.apple.bird", "cloudkit", "com.apple.cloudkit", "com.apple.fileprovider", "homebrew", "ms-playwright"],
             minAgeDays: 0,
             skipRunningApps: true,
             tier: .safe
@@ -523,6 +525,16 @@ public enum RuleCatalog {
             minAgeDays: 7,
             skipRunningApps: true,
             tier: .safe
+        ))
+        rules.append(CleaningRule(
+            id: "playwright-old-browsers",
+            category: .developer,
+            title: "Unused Playwright browsers",
+            detail: "Browser builds no project's Playwright version still uses. Builds a project needs, and the newest of each, are kept.",
+            paths: DynamicPaths.unusedPlaywrightBrowsers(root: lib.appending(path: "Caches/ms-playwright")),
+            contentsOnly: false,
+            minAgeDays: 7,
+            tier: .review
         ))
         rules.append(CleaningRule(
             id: "editor-obsolete-extensions",
