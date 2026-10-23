@@ -32,8 +32,8 @@ struct UpdateRelease: Equatable, Sendable {
     let notes: String
     let zipAsset: GitHubAsset?
     /// Expected SHA-256 of the zip, parsed from a `zip-sha256: <hex>` line in the
-    /// release notes (written by `Scripts/release.sh`). Optional — integrity check
-    /// is skipped if absent.
+    /// release notes (written by `Scripts/release.sh`). Required: a release
+    /// without it is reported as an error and never installed.
     let expectedSHA256: String?
 }
 
@@ -130,6 +130,7 @@ final class UpdateChecker {
             }
             if latest > current {
                 guard release.zipAsset != nil else { throw UpdaterError.noDownloadableAsset }
+                guard release.expectedSHA256 != nil else { throw UpdateInstaller.InstallError.missingChecksum }
                 state = .available(release)
             } else {
                 state = .upToDate
@@ -147,19 +148,29 @@ final class UpdateChecker {
               let asset = release.zipAsset,
               let token = GitHubTokenStore.load() else { return }
         do {
+            guard let expected = release.expectedSHA256 else {
+                throw UpdateInstaller.InstallError.missingChecksum
+            }
             state = .downloading
             let zipURL = try await UpdateInstaller.downloadZip(assetURL: asset.url, token: token)
 
-            if let expected = release.expectedSHA256 {
-                let actual = try await Task.detached { try UpdateInstaller.sha256(ofFileAt: zipURL) }.value
-                guard actual.caseInsensitiveCompare(expected) == .orderedSame else {
-                    try? FileManager.default.removeItem(at: zipURL)
-                    throw UpdateInstaller.InstallError.checksumMismatch
-                }
+            let actual = try await Task.detached { try UpdateInstaller.sha256(ofFileAt: zipURL) }.value
+            guard actual.caseInsensitiveCompare(expected) == .orderedSame else {
+                try? FileManager.default.removeItem(at: zipURL)
+                throw UpdateInstaller.InstallError.checksumMismatch
             }
 
             state = .installing
             let appURL = try await Task.detached { try UpdateInstaller.unzip(zipURL) }.value
+            // The checksum only proves the download matches the release; the
+            // signature proves the release was built by us. Never skip it.
+            do {
+                try await Task.detached { try UpdateInstaller.verifySignature(of: appURL) }.value
+            } catch {
+                try? FileManager.default.removeItem(at: appURL)
+                try? FileManager.default.removeItem(at: zipURL)
+                throw error
+            }
             let current = Bundle.main.bundleURL
 
             guard UpdateInstaller.canInstall(replacing: current) else {

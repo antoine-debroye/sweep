@@ -81,26 +81,45 @@ final class UninstallerModel {
     private func findLeftovers(for app: InstalledApp) {
         findingLeftovers = true
         let depth = matchDepth
+        let installed = apps.map { (url: $0.url, name: $0.name, bundleID: $0.bundleID) }
         Task.detached(priority: .userInitiated) { [bundleID = app.bundleID, name = app.name, url = app.url] in
             let teamID = CodeSigning.teamIdentifier(for: url)
             // Every copy with this bundle id shares the same Library data.
             // While another one is installed the data is still in use, so it
             // is listed for the user to decide but nothing is pre-selected.
-            let others = OtherAppCopies.find(bundleID: bundleID, excluding: url)
+            var others = OtherAppCopies.find(bundleID: bundleID, excluding: url)
+            others.siblings = OtherAppCopies.siblingBuilds(
+                bundleID: bundleID, appName: name, appURL: url, installed: installed)
             let found = LeftoverFinder.find(bundleID: bundleID, appName: name, teamID: teamID, depth: depth, appURL: url)
             await MainActor.run { [weak self] in
                 guard let self, self.selected?.bundleID == bundleID else { return }
                 self.leftoverNote = others.note(appName: name)
                 self.otherCopies = others
                 self.leftovers = found
-                // Pre-select confident matches only; heuristic ".review" hits are
-                // left unchecked for the user to opt into.
-                self.leftoverSelection = others.isEmpty
-                    ? Set(found.filter { $0.tier != .review }.map(\.id))
-                    : []
+                // Pre-select confident, disposable matches only. Heuristic
+                // ".review" hits and the app's personal data (settings,
+                // documents, sign-ins) are left for the user to opt into.
+                self.leftoverSelection = others.sharesData
+                    ? []
+                    : Set(found.filter { $0.tier != .review && !LeftoverFinder.isPersonalData($0.url) }.map(\.id))
                 self.findingLeftovers = false
             }
         }
+    }
+
+    /// The app's settings and data among the leftovers.
+    var personalDataItems: [ScanItem] {
+        leftovers.filter { LeftoverFinder.isPersonalData($0.url) }
+    }
+
+    var personalDataSelected: Bool {
+        !personalDataItems.isEmpty && personalDataItems.allSatisfy { leftoverSelection.contains($0.id) }
+    }
+
+    /// Selects, or clears, every settings-and-data item in one go.
+    func togglePersonalData() {
+        let ids = Set(personalDataItems.map(\.id))
+        if personalDataSelected { leftoverSelection.subtract(ids) } else { leftoverSelection.formUnion(ids) }
     }
 
     /// Selects an app by URL that may not be in the scanned `apps` list yet
@@ -392,6 +411,20 @@ struct UninstallerView: View {
                     Label(note, systemImage: "square.on.square")
                         .font(.system(size: 12))
                         .foregroundStyle(Theme.amber)
+                }
+                if !uninstaller.personalDataItems.isEmpty && !uninstaller.findingLeftovers {
+                    HStack(spacing: 8) {
+                        Text(uninstaller.personalDataSelected
+                             ? "The app's settings and data will be removed too."
+                             : "The app's settings and data are kept unless you select them.")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button(uninstaller.personalDataSelected ? "Keep App Data" : "Include App Data") {
+                            uninstaller.togglePersonalData()
+                        }
+                        .controlSize(.small)
+                    }
                 }
                 if uninstaller.leftovers.isEmpty && !uninstaller.findingLeftovers {
                     Text("No related files found outside the app bundle.")

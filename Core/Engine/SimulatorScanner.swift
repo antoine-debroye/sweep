@@ -93,10 +93,33 @@ public enum SimulatorScanner {
             && FileManager.default.fileExists(atPath: "/Library/Developer/CoreSimulator")
     }
 
+    public typealias Runner = @Sendable (_ path: String, _ args: [String], _ timeout: TimeInterval) async -> ProcessResult
+
+    /// Whether simctl can run without macOS stepping in. `/usr/bin/xcrun` is a
+    /// shim: with no developer tools it opens the Command Line Tools installer,
+    /// with only the Command Line Tools there is no simctl, and with an Xcode
+    /// that hasn't finished its first-launch setup simctl asks for an admin
+    /// password to install components. Ask the selected Xcode directly instead.
+    public static func toolsReady(
+        run: Runner = { await ProcessRunner.run($0, $1, timeout: $2) },
+        fileExists: @Sendable (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+    ) async -> Bool {
+        let select = await run("/usr/bin/xcode-select", ["-p"], 5)
+        let developerDir = select.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard select.status == 0, !developerDir.isEmpty,
+              fileExists(developerDir + "/usr/bin/simctl"),
+              fileExists(developerDir + "/usr/bin/xcodebuild") else { return false }
+        // Exit 0 means the first-launch setup is done; anything else (setup
+        // pending, timed out) means leave the simulator tools alone.
+        let firstLaunch = await run(developerDir + "/usr/bin/xcodebuild", ["-checkFirstLaunchStatus"], 20)
+        return firstLaunch.status == 0
+    }
+
     public static func inventory() async -> SimulatorInventory {
-        guard isAvailable else { return SimulatorInventory() }
-        let runtimesResult = await ProcessRunner.run(xcrun, ["simctl", "runtime", "list", "-j"])
-        let devicesResult = await ProcessRunner.run(xcrun, ["simctl", "list", "devices", "-j"])
+        guard isAvailable, await toolsReady() else { return SimulatorInventory() }
+        // A wedged CoreSimulatorService can leave simctl waiting forever.
+        let runtimesResult = await ProcessRunner.run(xcrun, ["simctl", "runtime", "list", "-j"], timeout: 60)
+        let devicesResult = await ProcessRunner.run(xcrun, ["simctl", "list", "devices", "-j"], timeout: 60)
         guard runtimesResult.status == 0, devicesResult.status == 0 else { return SimulatorInventory() }
         let runtimes = (try? parseRuntimes(Data(runtimesResult.stdout.utf8))) ?? []
         let devices = (try? parseDevices(Data(devicesResult.stdout.utf8))) ?? []
@@ -325,7 +348,7 @@ public enum SimulatorScanner {
         }
         runtimes.removeAll { !$0.linkedRuntimeIDs.isSubset(of: batch) }
         for device in devices {
-            let r = await ProcessRunner.run(xcrun, ["simctl", "delete", device.id])
+            let r = await ProcessRunner.run(xcrun, ["simctl", "delete", device.id], timeout: 120)
             if r.status == 0 {
                 result.removedDevices.append(device)
             } else {
@@ -333,7 +356,7 @@ public enum SimulatorScanner {
             }
         }
         for runtime in runtimes {
-            let r = await ProcessRunner.run(xcrun, ["simctl", "runtime", "delete", runtime.id])
+            let r = await ProcessRunner.run(xcrun, ["simctl", "runtime", "delete", runtime.id], timeout: 300)
             if r.status == 0 {
                 result.removedRuntimes.append(runtime)
             } else {

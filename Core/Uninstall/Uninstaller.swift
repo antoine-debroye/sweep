@@ -97,6 +97,25 @@ public enum MatchDepth: String, Sendable, CaseIterable, Identifiable {
 /// pre-select); team-ID and heuristic hits are `.review` (surfaced, not
 /// pre-selected).
 public enum LeftoverFinder {
+    /// Library folders that hold what the user made or set up in an app:
+    /// documents, settings, accounts, sign-ins, local databases. Uninstalling
+    /// is often a step before reinstalling, so these are listed but not
+    /// pre-selected. Caches, logs, saved window state, crash reports and
+    /// launch agents are disposable and stay pre-selected.
+    static let personalDataRoots = [
+        "Application Support", "Preferences", "Containers", "Group Containers",
+        "WebKit", "HTTPStorages", "Cookies", "SyncedPreferences", "Application Scripts",
+    ]
+
+    public static func isPersonalData(_ url: URL, home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Bool {
+        let path = SafetyPolicy.canonical(url.path)
+        let library = SafetyPolicy.canonical(home.appending(path: "Library").path) + "/"
+        guard path.hasPrefix(library) else { return false }
+        let relative = String(path.dropFirst(library.count))
+        if relative.hasPrefix("application support/crashreporter/") { return false }
+        return personalDataRoots.contains { relative.hasPrefix($0.lowercased() + "/") }
+    }
+
     public static func find(
         bundleID: String,
         appName: String,

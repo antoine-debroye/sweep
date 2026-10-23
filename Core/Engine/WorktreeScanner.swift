@@ -166,7 +166,15 @@ public enum WorktreeScanner {
         let stats = DirectorySizer.stats(of: url)
         guard stats.size > 0 else { return nil }
 
-        let status = await ProcessRunner.run("/usr/bin/git", ["-C", url.path, "status", "--porcelain"])
+        // Never call Apple's /usr/bin/git shim blindly: without developer
+        // tools it pops the Command Line Tools installer once per worktree.
+        // No usable git means the state can't be checked, so it stays locked.
+        guard let git = ArtifactGitGuard.gitPath else {
+            return AgentWorktree(url: url, name: name ?? defaultName(for: url), branch: nil, state: .unverified,
+                                 dirtyCount: 0, size: stats.size, lastModified: stats.newestModification)
+        }
+        // A timeout (124) is a failure like any other: unverified, locked.
+        let status = await ProcessRunner.run(git, ["-C", url.path, "status", "--porcelain"], timeout: 60)
         let dirtyLines = status.stdout.split(separator: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
 
         let state: WorktreeState
@@ -181,23 +189,27 @@ public enum WorktreeScanner {
                 ? .orphaned : .unverified
         }
 
-        let branchResult = await ProcessRunner.run("/usr/bin/git", ["-C", url.path, "rev-parse", "--abbrev-ref", "HEAD"])
+        let branchResult = await ProcessRunner.run(git, ["-C", url.path, "rev-parse", "--abbrev-ref", "HEAD"], timeout: 15)
         let branch = branchResult.status == 0 && !branchResult.stdout.isEmpty ? branchResult.stdout : nil
-
-        let project = url
-            .deletingLastPathComponent()   // .../worktrees
-            .deletingLastPathComponent()   // .../.claude
-            .deletingLastPathComponent()   // project root
-            .lastPathComponent
 
         return AgentWorktree(
             url: url,
-            name: name ?? "\(project)/\(url.lastPathComponent)",
+            name: name ?? defaultName(for: url),
             branch: branch,
             state: state,
             dirtyCount: dirtyLines.count,
             size: stats.size,
             lastModified: stats.newestModification
         )
+    }
+
+    /// "<project>/<worktree>" for `<project>/.claude/worktrees/<worktree>`.
+    static func defaultName(for url: URL) -> String {
+        let project = url
+            .deletingLastPathComponent()   // .../worktrees
+            .deletingLastPathComponent()   // .../.claude
+            .deletingLastPathComponent()   // project root
+            .lastPathComponent
+        return "\(project)/\(url.lastPathComponent)"
     }
 }
