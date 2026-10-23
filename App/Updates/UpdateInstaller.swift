@@ -1,9 +1,11 @@
 import Foundation
 import AppKit
 import CryptoKit
+import SweepCore
 
 /// The mechanics of applying an update: authenticated download of the release
-/// `.zip`, SHA-256 verification, unzip, and an in-place self-replace + relaunch.
+/// `.zip`, SHA-256 verification, unzip, Developer ID signature check, and an
+/// in-place self-replace + relaunch.
 /// Stateless; `UpdateChecker` drives it and owns the UI state. The heavy,
 /// blocking steps (`unzip`, `sha256`) are synchronous and are meant to be called
 /// off the main actor via `Task.detached`.
@@ -14,6 +16,8 @@ enum UpdateInstaller {
         case unzipFailed
         case appNotFound
         case checksumMismatch
+        case missingChecksum
+        case untrustedSignature
 
         var errorDescription: String? {
             switch self {
@@ -22,6 +26,8 @@ enum UpdateInstaller {
             case .unzipFailed: "The downloaded update couldn't be unpacked."
             case .appNotFound: "The downloaded update didn't contain Sweep.app."
             case .checksumMismatch: "The downloaded update failed its integrity check and was discarded."
+            case .missingChecksum: "This release has no checksum in its notes, so Sweep won't install it."
+            case .untrustedSignature: "The downloaded update isn't signed by Sweep's developer, so it was discarded."
             }
         }
     }
@@ -106,6 +112,16 @@ enum UpdateInstaller {
             return found
         }
         throw InstallError.appNotFound
+    }
+
+    /// Throws unless `appURL` is a real directory (not a symlink to somewhere
+    /// else) whose whole bundle is validly signed by our Developer ID team.
+    static func verifySignature(of appURL: URL) throws {
+        let values = try? appURL.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey])
+        guard values?.isSymbolicLink == false, values?.isDirectory == true,
+              case .success = UpdateSignature.verify(appAt: appURL) else {
+            throw InstallError.untrustedSignature
+        }
     }
 
     /// Whether the running bundle can be replaced in place: it must live in a
