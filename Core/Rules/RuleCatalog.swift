@@ -373,7 +373,7 @@ public enum RuleCatalog {
             tier: .safe
         ))
         // npx installs whole packages here and runs them from here; a command
-        // started minutes ago still loads its modules (Mole #1870). Only
+        // started minutes ago still loads its modules. Only
         // packages nobody has touched in a month are offered, for review.
         rules.append(CleaningRule(
             id: "npx-old-packages",
@@ -450,16 +450,6 @@ public enum RuleCatalog {
             detail: "Cached bottle downloads. Homebrew re-fetches on demand.",
             paths: [lib.appending(path: "Caches/Homebrew")],
             minAgeDays: 14,
-            tier: .safe
-        ))
-        rules.append(CleaningRule(
-            id: "cli-tool-cache",
-            category: .developer,
-            title: "Command-line tool cache",
-            detail: "Cache left by a command-line cleanup tool. Regenerated on next run.",
-            paths: [home.appending(path: ".cache/mole")],
-            contentsOnly: false,
-            minAgeDays: 7,
             tier: .safe
         ))
 

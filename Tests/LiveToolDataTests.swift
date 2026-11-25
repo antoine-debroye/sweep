@@ -1,14 +1,14 @@
 import XCTest
 @testable import SweepCore
 
-/// Ideas taken from tw93/Mole V1.63–V1.74, checked against fixtures. The real
-/// disk is never touched.
-final class MoleV174AlignmentTests: XCTestCase {
+/// Keeping data live tools depend on, and reclaiming idle simulators, checked
+/// against fixtures. The real disk is never touched.
+final class LiveToolDataTests: XCTestCase {
     var root: URL!
     let fm = FileManager()
 
     override func setUpWithError() throws {
-        root = fm.temporaryDirectory.appending(path: "sweep-mole174-\(UUID().uuidString)")
+        root = fm.temporaryDirectory.appending(path: "sweep-livetool-\(UUID().uuidString)")
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
     }
 

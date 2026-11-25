@@ -91,7 +91,7 @@ final class RealHomeProbeTests: XCTestCase {
         }
     }
 
-    /// Read-only: what the Mole V1.56–V1.58 alignment changes do on this Mac.
+    /// Read-only: what the in-use and ownership safety checks do on this Mac.
     func testProbeSafetyRefinements() async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["SWEEP_REAL_HOME_PROBE"] == "1",
                           "set SWEEP_REAL_HOME_PROBE=1 to run the read-only probe")

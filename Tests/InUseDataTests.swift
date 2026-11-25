@@ -1,14 +1,14 @@
 import XCTest
 @testable import SweepCore
 
-/// Ideas taken from tw93/Mole V1.59–V1.62, checked against fixtures. The real
-/// disk is never touched.
-final class MoleV162AlignmentTests: XCTestCase {
+/// Keeping what is still in use (test browsers, personal data, sibling builds),
+/// checked against fixtures. The real disk is never touched.
+final class InUseDataTests: XCTestCase {
     var root: URL!
     let fm = FileManager()
 
     override func setUpWithError() throws {
-        root = fm.temporaryDirectory.appending(path: "sweep-mole162-\(UUID().uuidString)")
+        root = fm.temporaryDirectory.appending(path: "sweep-inuse-\(UUID().uuidString)")
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
     }
 

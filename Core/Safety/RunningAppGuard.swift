@@ -81,7 +81,7 @@ public enum RunningAppGuard {
                 return true
             }
             // Adobe apps share `Caches/Adobe` and each other's `com.adobe.*`
-            // caches (Mole I-21/I-26). Any running Adobe app holds them all;
+            // caches. Any running Adobe app holds them all;
             // Creative Cloud's always-on background agents do not, or the
             // caches could never be cleaned.
             if name == "adobe" || name.hasPrefix("com.adobe.") {
