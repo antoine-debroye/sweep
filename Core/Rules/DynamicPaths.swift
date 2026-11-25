@@ -9,7 +9,7 @@ public enum DynamicPaths {
     // MARK: - Sandboxed containers
 
     /// Apple sandboxed daemons/apps whose container caches are known to be
-    /// regenerable (the list mole ships). Every other `com.apple.*` container
+    /// regenerable. Every other `com.apple.*` container
     /// is left alone: some hold state that is expensive or impossible to rebuild.
     static let appleContainerCacheAllowlist: Set<String> = [
         "com.apple.mediaanalysisd",
@@ -27,7 +27,7 @@ public enum DynamicPaths {
         "com.apple.podcasts",
     ].reduce(into: Set<String>()) { $0.insert($1.lowercased()) }
 
-    /// Apple containers whose `Data/tmp` mole clears (download leftovers).
+    /// Apple containers whose `Data/tmp` holds only download leftovers.
     static let appleContainerTmpAllowlist: Set<String> = [
         "com.apple.mediaanalysisd",
         "com.apple.configurator.xpc.InternetService",
@@ -371,7 +371,7 @@ public enum DynamicPaths {
     /// All or nothing: if any device is not shut down, or any device's state
     /// cannot be read, nothing is offered. A booted simulator shares
     /// CoreSimulator services with the others, and a probe we could not
-    /// finish is not a verdict (Mole I-16).
+    /// finish is not a verdict.
     public static func idleSimulatorDeviceData(home: URL) -> [URL] {
         let devices = home.appending(path: "Library/Developer/CoreSimulator/Devices")
         let leaves = [
