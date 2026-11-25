@@ -46,6 +46,7 @@ public enum DirectorySizer {
             .isRegularFileKey, .isSymbolicLinkKey,
             .totalFileAllocatedSizeKey, .fileAllocatedSizeKey,
             .contentModificationDateKey, .linkCountKey, .fileResourceIdentifierKey,
+            .isVolumeKey,
         ]
 
         var isDirectory: ObjCBool = false
@@ -89,6 +90,12 @@ public enum DirectorySizer {
             if visited % 512 == 0, Task.isCancelled { break }
             if child.lastPathComponent == ".git" { stats.containsGitMetadata = true }
             guard let values = try? child.resourceValues(forKeys: keySet) else { continue }
+            // Stop at mount points, like `du -x`: a mounted simulator runtime
+            // or disk image is another volume and not part of this folder.
+            if values.isVolume == true {
+                enumerator.skipDescendants()
+                continue
+            }
             let isRegularFile = values.isRegularFile == true
             if isRegularFile {
                 var counted = true

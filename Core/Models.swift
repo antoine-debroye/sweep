@@ -170,6 +170,10 @@ public struct CleaningRule: Sendable, Identifiable {
     /// Skip items that belong to an app that is currently running (cache and
     /// saved-state folders named after the app's bundle id).
     public let skipRunningApps: Bool
+    /// Executable names (lowercased) that, while any of them runs, take the
+    /// whole rule out of the scan. For tool caches whose owner may be writing
+    /// or reading them at any moment (a `uvx` holding uv's cache lock).
+    public let skipWhileRunning: Set<String>
     public let tier: SafetyTier
     public let domain: RuleDomain
     public let requiresFullDiskAccess: Bool
@@ -190,6 +194,7 @@ public struct CleaningRule: Sendable, Identifiable {
         minAgeDays: Int = 0,
         minItemBytes: Int64 = 0,
         skipRunningApps: Bool = false,
+        skipWhileRunning: Set<String> = [],
         tier: SafetyTier,
         domain: RuleDomain = .user,
         requiresFullDiskAccess: Bool = false,
@@ -207,6 +212,7 @@ public struct CleaningRule: Sendable, Identifiable {
         self.minAgeDays = minAgeDays
         self.minItemBytes = minItemBytes
         self.skipRunningApps = skipRunningApps
+        self.skipWhileRunning = Set(skipWhileRunning.map { $0.lowercased() })
         self.tier = tier
         self.domain = domain
         self.requiresFullDiskAccess = requiresFullDiskAccess

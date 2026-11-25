@@ -37,6 +37,12 @@ public enum BundleProtection {
         "com.zscaler.", "com.netskope.",
         "com.okta.mobile", "com.beyondtrust.",
         "com.malwarebytes.",
+        // Consumer antivirus and remote access: system extensions, kernel or
+        // network filters and root helpers that only their own uninstaller
+        // takes down cleanly.
+        "com.avast.", "com.avg.", "com.norton.", "com.nortonlifelock.", "com.bitdefender.",
+        "com.kaspersky.", "com.intego.",
+        "com.teamviewer.",
     ]
 
     /// Apps whose data must survive a cleanup even when the app is gone.

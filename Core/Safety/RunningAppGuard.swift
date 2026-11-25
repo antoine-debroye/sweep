@@ -47,6 +47,21 @@ public enum RunningAppGuard {
         "bravesoftware": "com.brave.browser",
     ]
 
+    /// Creative Cloud's resident helpers: running whenever Adobe software is
+    /// installed, so they cannot count as "an Adobe app is in use".
+    static let adobeBackgroundPrefixes = [
+        "com.adobe.acc", "com.adobe.ccx", "com.adobe.cclibrary", "com.adobe.ccd",
+        "com.adobe.adobecreativecloud", "com.adobe.creativecloud", "com.adobe.agsservice",
+        "com.adobe.arm", "com.adobe.coresync", "com.adobe.adobeipc", "com.adobe.adobe_ipc",
+        "com.adobe.adobeupdate", "com.adobe.adoberesourcesynchronizer",
+    ]
+
+    static func isAdobeApp(_ bundleID: String) -> Bool {
+        let id = bundleID.lowercased()
+        guard id.hasPrefix("com.adobe.") else { return false }
+        return !adobeBackgroundPrefixes.contains { id.hasPrefix($0) }
+    }
+
     /// `running` = lowercased bundle ids; `names` = lowercased localized app
     /// names (Electron apps store data under their display name, e.g.
     /// "Notion", not their bundle id, so a name match is the only reliable
@@ -64,6 +79,13 @@ public enum RunningAppGuard {
             if loweredNames.contains(name) { return true }
             if let mapped = nameToBundleID[name], !mapped.isEmpty, lowered.contains(mapped) {
                 return true
+            }
+            // Adobe apps share `Caches/Adobe` and each other's `com.adobe.*`
+            // caches (Mole I-21/I-26). Any running Adobe app holds them all;
+            // Creative Cloud's always-on background agents do not, or the
+            // caches could never be cleaned.
+            if name == "adobe" || name.hasPrefix("com.adobe.") {
+                if lowered.contains(where: isAdobeApp) { return true }
             }
             if let family = vendorFamilies[name],
                lowered.contains(where: { $0 == family || $0.hasPrefix(family + ".") }) {

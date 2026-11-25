@@ -21,7 +21,10 @@ public enum RuleCatalog {
             paths: [lib.appending(path: "Caches")],
             // ms-playwright holds the browsers projects run their tests with;
             // only builds no project uses go (playwright-old-browsers).
-            excludeNames: ["com.apple.bird", "cloudkit", "com.apple.cloudkit", "com.apple.fileprovider", "homebrew", "ms-playwright"],
+            // llama.cpp keeps downloaded models here, and Cypress and Camoufox
+            // keep the binaries they run with: none of them is a cache.
+            excludeNames: ["com.apple.bird", "cloudkit", "com.apple.cloudkit", "com.apple.fileprovider", "homebrew", "ms-playwright",
+                           "llama.cpp", "cypress", "camoufox"],
             minAgeDays: 0,
             skipRunningApps: true,
             tier: .safe
@@ -273,10 +276,25 @@ public enum RuleCatalog {
             id: "simulator-device-tmp",
             category: .developer,
             title: "Simulator scratch files",
-            detail: "Per-simulator temporary folders and XCTest throwaway devices.",
-            paths: DynamicPaths.simulatorDeviceTmpDirs(home: home) + [dev.appending(path: "XCTestDevices")],
+            detail: "XCTest throwaway devices.",
+            paths: [dev.appending(path: "XCTestDevices")],
             minAgeDays: 7,
             tier: .safe
+        ))
+        // Shut-down simulators keep caches, a unified-log store and downloaded
+        // assets that the device rebuilds when it boots; tens of GB across a
+        // few dozen devices. Nothing is offered while a simulator or the
+        // tools driving one are running.
+        rules.append(CleaningRule(
+            id: "simulator-idle-device-data",
+            category: .developer,
+            title: "Idle simulator data",
+            detail: "Caches, logs and downloaded assets inside shut-down simulators. Each device rebuilds them on its next boot.",
+            paths: DynamicPaths.idleSimulatorDeviceData(home: home),
+            contentsOnly: false,
+            minAgeDays: 1,
+            skipWhileRunning: ["simulator", "simctl", "xcodebuild", "xctest"],
+            tier: .review
         ))
         rules.append(CleaningRule(
             id: "simulator-caches",
@@ -291,12 +309,10 @@ public enum RuleCatalog {
             id: "js-package-caches",
             category: .developer,
             title: "JavaScript package caches",
-            detail: "npm, Yarn, Bun and Deno download caches. Packages re-download on demand.",
+            detail: "npm, Yarn Classic and Deno download caches. Packages re-download on demand.",
             paths: [
                 home.appending(path: ".npm/_cacache"),
                 lib.appending(path: "Caches/Yarn"),
-                home.appending(path: ".yarn/berry/cache"),
-                home.appending(path: ".bun/install/cache"),
                 // Deno's module caches only: its cache root also holds origin
                 // storage (`location_data`), which SafetyPolicy keeps.
                 lib.appending(path: "Caches/deno/remote"),
@@ -322,15 +338,62 @@ public enum RuleCatalog {
             id: "python-caches",
             category: .developer,
             title: "Python caches",
-            detail: "pip and uv wheel caches.",
+            detail: "pip wheel caches.",
             paths: [
                 lib.appending(path: "Caches/pip"),
-                lib.appending(path: "Caches/uv"),
                 home.appending(path: ".cache/pip"),
-                home.appending(path: ".cache/uv"),
             ],
             contentsOnly: false,
             minAgeDays: 14,
+            tier: .safe
+        ))
+        // uv and Bun install from their caches by hard link or clone, and a
+        // running uvx/bun holds them open or locked. Offered only while
+        // neither tool runs, and the cleaner insists on a conclusive idle.
+        rules.append(CleaningRule(
+            id: "uv-cache",
+            category: .developer,
+            title: "uv cache",
+            detail: "uv's package cache. Skipped while uv or uvx runs.",
+            paths: [lib.appending(path: "Caches/uv"), home.appending(path: ".cache/uv")],
+            contentsOnly: false,
+            minAgeDays: 14,
+            skipWhileRunning: ["uv", "uvx"],
+            tier: .safe
+        ))
+        rules.append(CleaningRule(
+            id: "bun-cache",
+            category: .developer,
+            title: "Bun cache",
+            detail: "Bun's install cache. Skipped while bun runs.",
+            paths: [home.appending(path: ".bun/install/cache")],
+            contentsOnly: false,
+            minAgeDays: 14,
+            skipWhileRunning: ["bun", "bunx"],
+            tier: .safe
+        ))
+        // npx installs whole packages here and runs them from here; a command
+        // started minutes ago still loads its modules (Mole #1870). Only
+        // packages nobody has touched in a month are offered, for review.
+        rules.append(CleaningRule(
+            id: "npx-old-packages",
+            category: .developer,
+            title: "Old npx packages",
+            detail: "Packages npx installed and nothing has used for 30 days. They re-download on next use.",
+            paths: [home.appending(path: ".npm/_npx")],
+            minAgeDays: 30,
+            tier: .review
+        ))
+        // The Dart analysis server rebuilds this index on demand.
+        rules.append(CleaningRule(
+            id: "dart-analysis-cache",
+            category: .developer,
+            title: "Dart analysis cache",
+            detail: "The Dart analysis server's index. Skipped while dart or flutter runs.",
+            paths: [home.appending(path: ".dartServer/.analysis-driver")],
+            contentsOnly: false,
+            minAgeDays: 7,
+            skipWhileRunning: ["dart", "dartaotruntime", "flutter"],
             tier: .safe
         ))
         rules.append(CleaningRule(
@@ -562,9 +625,8 @@ public enum RuleCatalog {
             id: "dev-tool-caches",
             category: .developer,
             title: "Build & CLI tool caches",
-            detail: "npx, Vite, webpack, TypeScript, Playwright/Puppeteer, Prisma, Poetry, Ruff, pyenv, rustup, Docker buildx and other tool caches. All re-created on demand.",
+            detail: "npm logs, Vite, webpack, TypeScript, Prisma, Poetry, Ruff, pyenv, rustup, Docker buildx and other tool caches. All re-created on demand.",
             paths: [
-                home.appending(path: ".npm/_npx"),
                 home.appending(path: ".npm/_logs"),
                 home.appending(path: ".npm/_prebuilds"),
                 home.appending(path: ".yarn/cache"),
@@ -576,7 +638,6 @@ public enum RuleCatalog {
                 home.appending(path: ".cache/webpack"),
                 home.appending(path: ".cache/eslint"),
                 home.appending(path: ".cache/prettier"),
-                home.appending(path: ".cache/puppeteer"),
                 home.appending(path: ".cache/prisma"),
                 home.appending(path: ".cache/opencode"),
                 home.appending(path: ".cache/gh"),

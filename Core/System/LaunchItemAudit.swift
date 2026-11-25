@@ -82,7 +82,12 @@ public enum LaunchItemAudit {
             for plist in plists(in: root) {
                 if Task.isCancelled { return findings }
                 guard let item = LaunchItem(url: plist) else { continue }
-                if let program = item.program {
+                if var program = item.program {
+                    // `~/bin/tool` in a plist the user wrote: judge the file it
+                    // names, not a literal "~" folder.
+                    if program == "~" || program.hasPrefix("~/") {
+                        program = home.path + program.dropFirst()
+                    }
                     referencedTargets.insert(SafetyPolicy.canonical(program))
                     if !FileManager().fileExists(atPath: program) {
                         findings.append(LaunchItemFinding(
@@ -157,12 +162,17 @@ public enum LaunchItemAudit {
         /// a shell probe that treated a plist-reader error string as a path is
         /// exactly how this produced a false "orphaned" verdict during design.
         static func programPath(_ dictionary: [String: Any]) -> String? {
-            if let program = dictionary["Program"] as? String, !program.isEmpty { return program }
-            if let arguments = dictionary["ProgramArguments"] as? [String],
-               let first = arguments.first, !first.isEmpty {
-                return first
+            var candidate: String?
+            if let program = dictionary["Program"] as? String, !program.isEmpty {
+                candidate = program
+            } else if let arguments = dictionary["ProgramArguments"] as? [String],
+                      let first = arguments.first, !first.isEmpty {
+                candidate = first
             }
-            return nil
+            // A bare command (`sh`, `node`) is looked up on a PATH this audit
+            // cannot reproduce, so its absence proves nothing.
+            guard let candidate, candidate.contains("/") else { return nil }
+            return candidate
         }
     }
 }

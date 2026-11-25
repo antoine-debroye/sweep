@@ -13,17 +13,31 @@ public struct ScanEngine: Sendable {
     /// data under the display name, so this is what makes the running-app
     /// guard work for them.
     public let runningAppNames: Set<String>
+    /// Lowercased executable names of running processes, for
+    /// `CleaningRule.skipWhileRunning`. nil = ask the OS when a rule needs it.
+    public let runningExecutableNames: Set<String>?
 
     public init(
         policy: SafetyPolicy,
         whitelist: [String] = [],
         runningBundleIDs: Set<String> = [],
-        runningAppNames: Set<String> = []
+        runningAppNames: Set<String> = [],
+        runningExecutableNames: Set<String>? = nil
     ) {
         self.policy = policy
         self.whitelist = whitelist
         self.runningBundleIDs = runningBundleIDs
         self.runningAppNames = runningAppNames
+        self.runningExecutableNames = runningExecutableNames
+    }
+
+    /// true when one of the rule's owner tools is running right now.
+    func ownerToolIsRunning(_ rule: CleaningRule) -> Bool {
+        guard !rule.skipWhileRunning.isEmpty else { return false }
+        let running = runningExecutableNames ?? Set(
+            RunningProcesses.executablePaths().map { URL(fileURLWithPath: $0).lastPathComponent.lowercased() }
+        )
+        return !rule.skipWhileRunning.isDisjoint(with: running)
     }
 
     public func scan(rules: [CleaningRule]) -> AsyncStream<ScanEvent> {
@@ -81,6 +95,7 @@ public struct ScanEngine: Sendable {
     func items(for rule: CleaningRule) -> [ScanItem] {
         let fm = FileManager()
         var results: [ScanItem] = []
+        if ownerToolIsRunning(rule) { return results }
 
         for root in rule.paths {
             guard fm.fileExists(atPath: root.path) else { continue }
