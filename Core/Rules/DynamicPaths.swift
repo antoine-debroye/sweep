@@ -363,13 +363,53 @@ public enum DynamicPaths {
         return stale
     }
 
-    /// Each simulator device's scratch folder.
-    public static func simulatorDeviceTmpDirs(home: URL) -> [URL] {
+    /// Rebuildable data inside shut-down simulators: caches (PosterBoard's
+    /// lock-screen renders among them), the unified-log store, downloaded
+    /// MobileAsset content and scratch space. A device regenerates all of it
+    /// on its next boot.
+    ///
+    /// All or nothing: if any device is not shut down, or any device's state
+    /// cannot be read, nothing is offered. A booted simulator shares
+    /// CoreSimulator services with the others, and a probe we could not
+    /// finish is not a verdict (Mole I-16).
+    public static func idleSimulatorDeviceData(home: URL) -> [URL] {
         let devices = home.appending(path: "Library/Developer/CoreSimulator/Devices")
-        return directories(in: devices).compactMap { device in
-            let tmp = device.appending(path: "data/tmp")
-            return isDirectory(tmp) ? tmp : nil
+        let leaves = [
+            "data/Library/Caches",
+            "data/var/db/diagnostics",
+            "data/var/db/uuidtext",
+            "data/private/var/MobileAsset",
+            "data/tmp",
+        ]
+        var found: [URL] = []
+        for device in directories(in: devices) {
+            guard let state = simulatorState(of: device) else { return [] }
+            guard state == simulatorShutdownState else { return [] }
+            let root = device.resolvingSymlinksInPath().path
+            for leaf in leaves {
+                let url = device.appending(path: leaf)
+                guard isDirectory(url), !isSymlink(url) else { continue }
+                // Never follow a link out of the device: every component of
+                // the leaf must resolve inside the device folder.
+                guard url.resolvingSymlinksInPath().path.hasPrefix(root + "/") else { continue }
+                found.append(url)
+            }
         }
+        return found
+    }
+
+    /// CoreSimulator's `state` in device.plist: 1 = Shutdown, 3 = Booted.
+    static let simulatorShutdownState = 1
+
+    static func simulatorState(of device: URL) -> Int? {
+        guard let data = try? Data(contentsOf: device.appending(path: "device.plist")),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil),
+              let dictionary = plist as? [String: Any] else { return nil }
+        return (dictionary["state"] as? NSNumber)?.intValue
+    }
+
+    static func isSymlink(_ url: URL) -> Bool {
+        (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true
     }
 
     // MARK: - Helpers

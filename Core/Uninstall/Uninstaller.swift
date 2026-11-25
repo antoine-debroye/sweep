@@ -28,7 +28,9 @@ public enum AppInventory {
         var apps: [InstalledApp] = []
         for root in roots {
             guard let entries = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { continue }
-            for entry in entries where entry.pathExtension == "app" {
+            // A dot-prefixed bundle is a hidden backup (an updater's copy),
+            // not an installation the user sees in Finder.
+            for entry in entries where entry.pathExtension == "app" && !entry.lastPathComponent.hasPrefix(".") {
                 if let app = installedApp(at: entry) { apps.append(app) }
             }
         }
@@ -97,6 +99,21 @@ public enum MatchDepth: String, Sendable, CaseIterable, Identifiable {
 /// pre-select); team-ID and heuristic hits are `.review` (surfaced, not
 /// pre-selected).
 public enum LeftoverFinder {
+    /// The app's name, plus the name without a trailing release number
+    /// ("Alfred 4" → "Alfred", "Foo-2.1" → "Foo"). The number has to be its
+    /// own word: "Sweep2" stays as it is.
+    static func dataFolderNames(for appName: String) -> [String] {
+        var names = [appName]
+        let pattern = #"^(.*\S)[ \-]+v?\d+(\.\d+)*$"#
+        if let regex = try? NSRegularExpression(pattern: pattern),
+           let found = regex.firstMatch(in: appName, range: NSRange(appName.startIndex..., in: appName)),
+           let base = Range(found.range(at: 1), in: appName) {
+            let stripped = String(appName[base])
+            if stripped.count >= 3, stripped != appName { names.append(stripped) }
+        }
+        return names
+    }
+
     /// Library folders that hold what the user made or set up in an app:
     /// documents, settings, accounts, sign-ins, local databases. Uninstalling
     /// is often a step before reinstalling, so these are listed but not
@@ -151,12 +168,16 @@ public enum LeftoverFinder {
             .map { ($0.0, $0.1, SafetyTier.explicitOnly) }
 
         if depth == .enhanced || depth == .deep {
-            candidates += [
-                (lib.appending(path: "Application Support/\(appName)"), "Application support", .explicitOnly),
-                (lib.appending(path: "Caches/\(appName)"), "Caches", .explicitOnly),
-                (lib.appending(path: "Logs/\(appName)"), "Logs", .explicitOnly),
-                (lib.appending(path: "Application Support/CrashReporter/\(appName)"), "Crash reports", .explicitOnly),
-            ]
+            // "Alfred 4" keeps its data in "Alfred": a release number in the
+            // app's name is rarely in its data folder's name.
+            for name in LeftoverFinder.dataFolderNames(for: appName) {
+                candidates += [
+                    (lib.appending(path: "Application Support/\(name)"), "Application support", .explicitOnly),
+                    (lib.appending(path: "Caches/\(name)"), "Caches", .explicitOnly),
+                    (lib.appending(path: "Logs/\(name)"), "Logs", .explicitOnly),
+                    (lib.appending(path: "Application Support/CrashReporter/\(name)"), "Crash reports", .explicitOnly),
+                ]
+            }
             // Shared containers addressed by the bundle id as whole reverse-DNS
             // labels (`<TEAM>.com.vendor.app`, `group.com.vendor.app`) — a bare
             // substring would hand `com.vendor.app2`'s container to `com.vendor.app`.

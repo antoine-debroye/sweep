@@ -20,9 +20,13 @@ public struct SafetyPolicy: Sendable {
     /// inside it just as surely as deleting the library itself.
     public let liveDataNodes: [String]
 
+    /// Canonical `~/Library`.
+    let libraryRoot: String
+
     public init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
         self.home = home
         let h = home.path
+        self.libraryRoot = SafetyPolicy.canonical("\(h)/Library")
 
         var subtrees = [
             "\(h)/Documents",
@@ -47,6 +51,14 @@ public struct SafetyPolicy: Sendable {
             "\(h)/.aws",
             "\(h)/.config",
             "\(h)/.kube",
+            // Claude Code's own history: session transcripts (`--resume`),
+            // per-file edit history (rewind) and prompt history. Not a cache,
+            // and gone for good once deleted. Agent worktrees elsewhere under
+            // ~/.claude stay visible to WorktreeScanner.
+            "\(h)/.claude/projects",
+            "\(h)/.claude/file-history",
+            "\(h)/.claude/history.jsonl",
+            "\(h)/.claude/todos",
         ]
         subtrees += [
             "/System",
@@ -86,6 +98,9 @@ public struct SafetyPolicy: Sendable {
             // Deno keeps origin storage (localStorage) for --location scripts
             // inside its cache root; the module caches beside it are offered.
             "\(h)/Library/Caches/deno/location_data",
+            // Kitty's graphics-protocol cache: a running terminal session
+            // streams images through it and breaks if it vanishes.
+            "\(h)/Library/Caches/kitty",
         ].map(SafetyPolicy.canonical)
 
         self.protectedExactNodes = [
@@ -119,6 +134,11 @@ public struct SafetyPolicy: Sendable {
     public func isProtected(_ url: URL) -> Bool {
         let path = SafetyPolicy.canonical(url.path)
         for node in protectedExactNodes where path == node { return true }
+        // Every folder directly inside ~/Library or /Library (Fonts,
+        // LaunchAgents, Application Scripts…): its contents may be cleaned,
+        // the folder itself never goes. Apps and macOS expect them to exist.
+        let parent = (path as NSString).deletingLastPathComponent
+        if parent == libraryRoot || parent == "/library" { return true }
         for subtree in protectedSubtrees {
             if path == subtree || path.hasPrefix(subtree + "/") { return true }
         }

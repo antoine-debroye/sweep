@@ -13,6 +13,9 @@ final class DevCleanerModel {
     var artifactMinAgeDays = 30
     var statusMessage: String?
     var dockerDF: String?
+    /// The engine address when docker points at another machine; prune and
+    /// the usage report are withheld while it does.
+    var dockerRemoteEndpoint: String?
     var brewPreview: BrewCleanupPreview?
     var toolOutputs: [String: ToolRun] = [:]
     var simulators = SimulatorInventory()
@@ -182,11 +185,30 @@ final class DevCleanerModel {
         guard let docker = ["/opt/homebrew/bin/docker", "/usr/local/bin/docker"]
             .first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else { return }
         Task {
+            if let remote = await Self.remoteDockerEndpoint(docker) {
+                self.dockerRemoteEndpoint = remote
+                self.dockerDF = nil
+                return
+            }
+            self.dockerRemoteEndpoint = nil
             let result = await ProcessRunner.run(docker, ["system", "df", "--format", DockerDiskUsage.format], timeout: 10)
             if result.status == 0, !result.stdout.isEmpty {
                 self.dockerDF = DockerDiskUsage.summary(result.stdout)
             }
         }
+    }
+
+    /// The engine address when the current docker context is not this Mac,
+    /// nil when it is local. A context that cannot be read counts as remote:
+    /// prune must not run against an engine nobody identified.
+    nonisolated static func remoteDockerEndpoint(_ docker: String) async -> String? {
+        let result = await ProcessRunner.run(docker, DockerEndpoint.inspectArguments, timeout: 10)
+        guard result.status == 0 else { return "unknown (docker context inspect failed)" }
+        let endpoint = DockerEndpoint.effective(
+            dockerHost: ProcessInfo.processInfo.environment["DOCKER_HOST"],
+            contextHost: result.stdout
+        )
+        return DockerEndpoint.isLocal(endpoint) ? nil : endpoint
     }
 
     /// brew's own dry run, so the row says what it frees before it runs.
@@ -261,7 +283,19 @@ final class DevCleanerModel {
         if !FileManager.default.isExecutableFile(atPath: executable), tool.id.hasPrefix("docker") {
             executable = "/opt/homebrew/bin/docker"
         }
+        let isDocker = tool.id.hasPrefix("docker")
         Task {
+            // Re-read right before pruning: the context may have changed
+            // since the row was drawn.
+            if isDocker, let remote = await Self.remoteDockerEndpoint(executable) {
+                self.dockerRemoteEndpoint = remote
+                self.toolOutputs[tool.id] = ToolRun(
+                    running: false,
+                    output: "Not run: docker points at a remote engine (\(remote)). Switch to a local context first.",
+                    succeeded: false
+                )
+                return
+            }
             let result = await ProcessRunner.run(executable, tool.args, timeout: 900, environment: tool.environment)
             let output = [result.stdout, result.stderr].filter { !$0.isEmpty }.joined(separator: "\n")
             self.toolOutputs[tool.id] = ToolRun(
@@ -596,6 +630,8 @@ struct DevCleanerView: View {
                             ProgressView().controlSize(.small)
                         } else if !dev.toolAvailable(tool) {
                             StatusPill(text: "Not installed", color: .gray)
+                        } else if tool.id.hasPrefix("docker"), dev.dockerRemoteEndpoint != nil {
+                            StatusPill(text: "Remote context", color: .gray)
                         } else {
                             Button("Run") { dev.run(tool) }
                                 .buttonStyle(SecondaryButtonStyle())

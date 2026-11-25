@@ -78,7 +78,7 @@ public struct Cleaner: Sendable {
     /// transfer that is resuming right now, and deleting it loses the transfer.
     static let rulesRequiringConclusiveIdle: Set<String> = [
         "incomplete-downloads", "incomplete-brew-downloads", "codex-incomplete-runtimes",
-        "user-temp", "darwin-user-caches",
+        "user-temp", "darwin-user-caches", "uv-cache", "bun-cache", "npx-old-packages",
     ]
 
     static func requiresConclusiveIdle(_ item: ScanItem) -> Bool {
@@ -196,7 +196,12 @@ public struct Cleaner: Sendable {
             progress?(CleanProgress(completed: completed, total: total, currentName: item.displayName, freedSoFar: freed))
         }
 
-        if !systemItems.isEmpty {
+        // A cancel must also stop the privileged batch: those removals are
+        // permanent, so running them after the user said stop is the worst
+        // possible moment to ignore it.
+        if !systemItems.isEmpty, Task.isCancelled {
+            errors.append("System files skipped: cleaning was cancelled.")
+        } else if !systemItems.isEmpty {
             let validPaths = systemItems
                 .filter { !policy.isProtected($0.url) && PrivilegedPathPolicy.isAllowed($0.url.path) }
                 .map { $0.url.path }

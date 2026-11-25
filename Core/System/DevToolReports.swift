@@ -54,6 +54,29 @@ public struct BrewCleanupPreview: Sendable, Equatable {
 
 // MARK: - Docker
 
+/// Which engine `docker` talks to. With a remote context selected (ssh://,
+/// tcp://) `system df` reports and `system prune` deletes on another machine,
+/// which is not this Mac's disk and not what a cleaner should touch.
+public enum DockerEndpoint {
+    /// Arguments that print the current context's engine address.
+    public static let inspectArguments = ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"]
+
+    /// The endpoint in force: `DOCKER_HOST` wins over the context, as it does
+    /// for the docker CLI itself.
+    public static func effective(dockerHost: String?, contextHost: String) -> String {
+        if let env = dockerHost?.trimmingCharacters(in: .whitespacesAndNewlines), !env.isEmpty { return env }
+        return contextHost.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// true for a local socket. An empty answer means the default context,
+    /// which is the local socket.
+    public static func isLocal(_ endpoint: String) -> Bool {
+        let host = endpoint.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if host.isEmpty { return true }
+        return host.hasPrefix("unix://") || host.hasPrefix("/")
+    }
+}
+
 /// `docker system df`, with Docker's own reclaimable figure corrected where it
 /// contradicts its counts. Docker Engine 29.0–29.3 reports images that back
 /// running containers as 100% reclaimable (moby/moby#51775) — showing that
